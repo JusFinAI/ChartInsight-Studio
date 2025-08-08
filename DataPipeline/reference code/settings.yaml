@@ -1,0 +1,15 @@
+# 환경 설정 파일
+environment: paper  # 'real' 또는 'paper'
+
+api:
+  paper:  # 모의투자 설정
+    host: https://mockapi.kiwoom.com
+    websocket: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
+    app_key: wk60HYbXNW717UL-q3G-QWGkwd7GuNZZ64y94cN4s0g
+    secret_key: ZKswyYxTVuTUfv5u3lv2pf0avElzF-zHF-tdjMXvdxg
+  
+  real:  # 실전투자 설정
+    host: https://api.kiwoom.com
+    websocket: wss://api.kiwoom.com:10000/api/dostk/websocket
+    app_key: AduW5WfbiScOf9_x4UXIyjyDaPZvC9XJ_lH8TiMS65M
+    secret_key: 1j4tQ5y8A0K0S5Rk8M-65aKT8kuSBYQOo0TOHjydmsU 

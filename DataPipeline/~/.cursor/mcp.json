@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "playwright-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "playwright-mcp"
+      ],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+} 

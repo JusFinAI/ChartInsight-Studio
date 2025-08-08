@@ -1,0 +1,209 @@
+# TradeSmartAI - 주식 데이터 수집 파이프라인
+
+## 1. 프로젝트 개요
+
+이 프로젝트는 "TradeSmartAI" 웹 서비스의 핵심 데이터 기반을 마련하기 위한 주식 데이터 수집 파이프라인입니다. 키움증권 REST API를 통해 국내 주식 시장의 종목 정보 및 시세 데이터(OHLCV)를 수집하고, 이를 PostgreSQL 데이터베이스에 저장하며, Apache Airflow를 활용하여 수집 프로세스를 자동화하고 모니터링하는 것을 목표로 합니다.
+
+## 2. 주요 목표
+
+* **안정적인 데이터 저장소 구축**: 선정된 30개 핵심 종목 및 전체 시장 종목 정보를 PostgreSQL DB에 체계적으로 저장 및 관리.
+* **자동화된 데이터 수집**: 다양한 타임프레임(주봉, 일봉, 5분봉, 30분봉, 1시간봉)의 OHLCV 데이터를 주기적으로 자동 수집 및 업데이트.
+* **확장 가능한 기반 마련**: 향후 AI 기반 패턴 분석, 트레이딩 코치 기능 개발을 위한 견고한 데이터 파운데이션 구축.
+* **효율적인 AI 개발 방법론 수립**: Gemini(고수준 설계/계획)와 Cursor.ai(세부 구현/디버깅)를 활용한 개발 워크플로우 정립.
+
+**선정 종목 (총 30개):**
+* **코스피 20종목**: 삼성전자, SK하이닉스, LG에너지솔루션, 현대차, 기아, NAVER, 카카오, 삼성바이오로직스, 셀트리온, POSCO홀딩스, LG화학, KB금융, 신한지주, 삼성SDI, 현대모비스, 한국전력, SK이노베이션, 카카오뱅크, 삼성물산, KT&G.
+* **코스닥 10종목**: 에코프로비엠, HLB, 셀트리온헬스케어, 펄어비스, 카카오게임즈, 리노공업, 에스엠, JYP Ent., 위메이드, 에이치엘비생명과학.
+
+## 3. 기술 스택
+
+* **주요 언어**: Python 3.8+
+* **데이터 소스**: 키움증권 REST API
+* **워크플로우 오케스트레이션**: Apache Airflow
+* **데이터베이스**: PostgreSQL (로컬 Docker 환경 및 GCP Cloud SQL)
+* **DB ORM**: SQLAlchemy
+* **클라우드 플랫폼 (시험 운영)**: Google Cloud Platform (GCP)
+    * Compute Engine (Linux VM for Airflow & Scripts)
+    * Cloud SQL (PostgreSQL)
+    * Cloud Logging, Cloud Monitoring
+* **핵심 Python 라이브러리**: `requests`, `psycopg2-binary`, `SQLAlchemy`, `pandas`, `pytz`, `apache-airflow[postgres]`, `python-dotenv`
+* **개발 환경**:
+    * IDE: Cursor.ai (VS Code 기반)
+    * AI 코딩 파트너: Gemini Advanced
+
+## 4. 아키텍처 (Architecture)
+
+### 4.1. 폴더 구조 (주요 디렉토리)
+
+
+DataPipeline/
+├── backup/                   # DAG 백업 파일 저장용
+│   ├── data_collector_test_dag_backup.py
+│   └── data_collector_test_dag.py
+├── data/                     # 입력 데이터 저장 폴더
+│   ├── kospi_code.json       # KOSPI 전체 종목 정보 (getStockCodelist.py 결과물)
+│   └── kosdaq_code.json      # KOSDAQ 전체 종목 정보 (getStockCodelist.py 결과물)
+├── docs/                     # 프로젝트 문서 저장용
+│   └── data_collector_smart_update_system.md
+├── reference code/           # 기존 참고 코드 저장용
+│   ├── config.py
+│   ├── getStockCodelist.py
+│   ├── getStockDailyChart.py
+│   └── ...
+├── output/                   # (선택사항) DataPipeline 내 스크립트의 결과물 저장용
+├── src/                      # 핵심 소스 코드
+│   ├── kiwoom_api/           # 키움증권 API 클라이언트 패키지
+│   │   ├── config/           #   API 환경 설정 (settings.yaml)
+│   │   ├── core/             #   API 핵심 로직
+│   │   ├── models/           #   API 데이터 모델
+│   │   └── services/         #   API 서비스 로직
+│   ├── utils/                # 범용 유틸리티 함수
+│   │   └── common_helpers.py #   공통 헬퍼 함수
+│   ├── database.py           # DB 모델(Stock, Candle) 및 세션 관리
+│   ├── stock_info_collector.py # 전체 종목 정보 DB 저장 스크립트
+│   ├── data_collector_test.py # 테스트용 단일 종목 데이터 수집 로직 (1차 완료)
+│   └── data_collector.py     # (개발 예정) 전체 타겟 종목 차트 데이터 수집 로직
+├── dags/                     # Airflow DAG 정의
+│   └── data_collector_test_dag.py # 테스트용 DAG (1차 완료)
+├── logs/                     # Airflow 및 애플리케이션 로그
+├── config/                   # Airflow 설정 파일
+├── plugins/                  # Airflow 커스텀 플러그인
+├── venv/                     # Python 가상환경
+├── .env                      # 환경 변수 (API 키, DB 접속 정보)
+├── docker-compose.yaml       # 로컬 개발 환경 Docker 설정 (검증 완료)
+├── README.md                 # 프로젝트  architechture 문서
+└── requirements.txt          # Python 라이브러리 목록
+└── 
+
+### 4.2 Kiwoom API 동작 메커니즘
+
+## 전체 동작 메커니즘 흐름
+
+### 1. 설정 파일 로드 (Config 클래스)
+```
+src/kiwoom_api/core/config.py
+```
+- **싱글톤 패턴**으로 구현된 Config 클래스가 `src/kiwoom_api/config/settings.yaml` 파일을 로드합니다.
+- 환경 설정 (paper/real)에 따라 호스트 URL, app_key, secret_key 등을 설정합니다.
+- 모든 API 호출에 필요한 기본 정보를 제공합니다.
+
+### 2. 인증 관리 (Auth 클래스)
+```
+src/kiwoom_api/core/auth.py
+```
+- **싱글톤 패턴**으로 구현된 Auth 클래스가 키움증권 API의 토큰 관리를 담당합니다.
+- OAuth2 방식으로 토큰을 발급받고, 만료 시 자동으로 갱신합니다.
+- Config에서 읽어온 app_key, secret_key를 사용하여 인증을 처리합니다.
+
+### 3. API 클라이언트 (KiwoomClient 클래스)
+```
+src/kiwoom_api/core/client.py
+```
+- 실제 HTTP 요청을 처리하는 클라이언트 클래스입니다.
+- Auth 클래스에서 토큰을 받아와서 API 요청 헤더에 포함시킵니다.
+- 연속조회(페이징) 처리를 위한 헤더 관리를 수행합니다.
+
+### 4. 차트 서비스 (ChartService 클래스)
+```
+src/kiwoom_api/services/chart.py
+```
+- 차트 데이터를 가져오는 비즈니스 로직을 담당합니다.
+- 일봉(`get_daily_chart`), 분봉(`get_minute_chart`), 주봉(`get_weekly_chart`) 등의 메서드를 제공합니다.
+- KiwoomClient를 통해 API 요청을 보내고, 응답을 ChartData 객체로 변환합니다.
+
+### 5. 데이터 모델 (ChartData 클래스)
+```
+src/kiwoom_api/models/chart_data.py
+```
+- API 응답 데이터를 구조화하여 저장하는 데이터 모델입니다.
+- pandas DataFrame으로 변환하는 기능을 제공합니다.
+- 컬럼명 매핑 및 전처리 기능을 포함합니다.
+
+### 6. 데이터 수집 스크립트 (data_collector_test.py)
+```
+src/data_collector_test.py
+```
+- ChartService의 `get_minute_chart` 함수를 사용하여 실제 데이터를 수집합니다.
+- 수집된 데이터를 데이터베이스에 저장하는 로직을 구현합니다.
+
+## 상세 호출 흐름
+
+```
+data_collector_test.py 실행
+↓
+get_minute_chart() 호출
+↓
+ChartService.get_minute_chart() 호출
+↓
+KiwoomClient.request() 호출
+↓
+Auth.get_token() 호출 (토큰 획득)
+↓
+Config에서 API 설정 정보 사용
+↓
+settings.yaml 파일 읽기
+↓
+키움증권 API 서버로 HTTP 요청
+↓
+응답 데이터를 ChartData 객체로 변환
+↓
+DataFrame으로 변환
+↓
+데이터베이스에 저장
+```
+
+## 핵심 구성 요소들의 역할
+
+1. **Config 클래스**: `settings.yaml` 파일의 설정 정보를 중앙 관리
+2. **Auth 클래스**: OAuth2 토큰 발급 및 갱신 관리
+3. **KiwoomClient 클래스**: HTTP 요청/응답 처리
+4. **ChartService 클래스**: 차트 데이터 조회 비즈니스 로직
+5. **ChartData 클래스**: API 응답 데이터의 구조화 및 변환
+6. **data_collector_test.py**: 실제 데이터 수집 및 DB 저장 로직
+
+이러한 구조는 **관심사 분리**와 **재사용성**을 높이고, 각 컴포넌트가 독립적으로 동작할 수 있도록 설계되어 있습니다. 모든 클래스가 싱글톤 패턴으로 구현되어 있어 메모리 효율성과 설정 일관성을 보장합니다.
+
+## 5. 주요 모듈 및 역할
+
+* **`src/kiwoom_api/`**: 키움증권 REST API 인증, 데이터 요청 및 응답 처리 담당.
+* **`src/database.py`**: PostgreSQL DB 스키마(Stock, Candle 모델) 정의 및 DB 세션 생성/관리.
+* **`src/utils/common_helpers.py`**: `kospi_code.json`, `kosdaq_code.json` 파일 파싱 등 범용 헬퍼 함수.
+* **`src/stock_info_collector.py`**: `utils/common_helpers.py`를 사용하여 JSON 파일의 전체 종목 정보를 읽어와 `database.py`의 `Stock` 모델을 통해 DB에 저장(UPSERT).
+* **`src/data_collector_test.py`** ✅: 테스트용 단일 종목(삼성전자) 데이터 수집 로직. 초기 적재 및 스마트 증분 업데이트 기능 포함 1차 완료
+
+* **`dags/data_collector_test_dag.py`** ✅: 테스트용 Airflow DAG. `initial_stock_load_task`, `initial_load_minute_data_task`, `smart_incremental_update_task` 포함 
+* **(개발 예정) `src/data_collector.py`**: 테스트 버전을 기반으로 확장하여 30개 타겟 종목에 대해 OHLCV 데이터를 수집하고 저장.
+* **(개발 예정) `dags/data_collector_dag.py`**: 전체 파이프라인을 위한 본격적인 Airflow 워크플로우 정의.
+
+
+## 6. 로컬 개발 환경 실행 가이드 (요약)
+
+1. **환경 설정**: `.env` 파일 설정 (API 키, DB 접속 정보)
+2. **전체 서비스 실행**: `docker-compose up -d` (PostgreSQL, Airflow 등 모든 서비스)
+3. **DB 테이블 생성**: `python src/database.py` (stocks, candles 테이블 생성)
+4. **Airflow 웹 UI 접속**: http://localhost:8080 (admin/admin)
+5. **테스트 DAG 실행**: `data_collector_test_dag` 활성화 및 실행
+   - `initial_stock_load_task`: 종목 정보 자동 적재
+   - `initial_load_minute_data_task`: 초기 분봉 데이터 적재 (삼성전자)
+   - `smart_incremental_update_task`: 증분 업데이트
+6. **로컬 테스트**: `python src/data_collector_test.py` (독립 실행 가능)
+
+## 7. 데이터베이스 확인 방법
+
+```bash
+# PostgreSQL 접속하여 데이터 확인
+docker exec -it tradesmart_db psql -U postgres -d tradesmart_db
+
+# 종목 수 확인
+SELECT COUNT(*) FROM stocks;
+
+# 시장별 종목 수 확인  
+SELECT market_name, COUNT(*) FROM stocks GROUP BY market_name;
+
+# 샘플 데이터 조회
+SELECT stock_code, stock_name, market_name FROM stocks LIMIT 5;
+```
+
+
+
+

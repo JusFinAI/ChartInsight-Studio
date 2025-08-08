@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+numpy
+plotly
+pydantic
+PyYAML
+requests 
+SQLAlchemy
+psycopg2-binary

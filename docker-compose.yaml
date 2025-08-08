@@ -1,0 +1,166 @@
+# TradeSmartAI 프로젝트를 위한 Docker Compose 구성 파일 (풀스택 통합 버전)
+
+# 공통 Airflow 설정: 모든 Airflow 서비스에 적용
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.10.5
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow:5432/airflow_meta
+    PYTHONPATH: /opt/airflow
+    POSTGRES_HOST: postgres-tradesmart
+    POSTGRES_USER: ${POSTGRES_TRADESMART_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_TRADESMART_PASSWORD}
+    POSTGRES_DB: tradesmart_db
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Asia/Seoul
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+  volumes:
+    # 새로운 통합 폴더 구조에 맞게 경로 수정
+    - ./DataPipeline/dags:/opt/airflow/dags
+    - ./DataPipeline/logs:/opt/airflow/logs
+    - ./DataPipeline/src:/opt/airflow/src
+    - ./DataPipeline/data:/opt/airflow/data
+    - ./DataPipeline/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID}:${AIRFLOW_GID}"
+  networks:
+    - chartinsight-network
+
+services:
+  # --- 데이터베이스 서비스들 ---
+  postgres-airflow:
+    image: postgres:15
+    container_name: postgres-airflow
+    environment:
+      POSTGRES_USER: ${POSTGRES_AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_AIRFLOW_PASSWORD}
+      POSTGRES_DB: airflow_meta
+    volumes:
+      - postgres-airflow-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_AIRFLOW_USER}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - chartinsight-network
+
+  postgres-tradesmart:
+    image: postgres:15
+    container_name: postgres-tradesmart
+    environment:
+      POSTGRES_USER: ${POSTGRES_TRADESMART_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_TRADESMART_PASSWORD}
+      POSTGRES_DB: tradesmart_db
+    volumes:
+      - postgres-tradesmart-volume:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_TRADESMART_USER}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - chartinsight-network
+
+  # --- 웹 애플리케이션 서비스들 (app 프로필) ---
+  backend:
+    build:
+      context: ./backend
+    container_name: chartinsight_backend
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_TRADESMART_USER}:${POSTGRES_TRADESMART_PASSWORD}@postgres-tradesmart:5432/tradesmart_db"
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    profiles:
+      - app
+    depends_on:
+      postgres-tradesmart:
+        condition: service_healthy
+    restart: always
+    networks:
+      - chartinsight-network
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: chartinsight_frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    profiles:
+      - app
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - chartinsight-network
+
+  # --- Airflow 서비스들 (pipeline 프로필) ---
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        python /opt/airflow/src/database.py &&
+        airflow users create \
+          --username $${_AIRFLOW_WWW_USER_USERNAME:-airflow} \
+          --password $${_AIRFLOW_WWW_USER_PASSWORD:-airflow} \
+          --firstname Airflow \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.com
+        echo "Creating Kiwoom API pool..." &&
+        airflow pools set kiwoom_api_pool 1 "Kiwoom API single-slot pool"
+    profiles:
+      - pipeline
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      postgres-tradesmart:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    profiles:
+      - pipeline
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    profiles:
+      - pipeline
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+networks:
+  chartinsight-network:
+    name: chartinsight-network # 네트워크 이름 고정
+    driver: bridge
+
+volumes:
+  postgres-airflow-volume:
+  postgres-tradesmart-volume:
