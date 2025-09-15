@@ -207,21 +207,43 @@ ChartInsight-Studio/
 
 ## 구동/검증 예시
 
+아래는 로컬 개발 환경에서 서비스(백엔드/프론트엔드) 실행 및 간단한 디버깅/확인용 명령 모음입니다.
+
 ```bash
-# 웹 앱 실행
+# 1) 도커 기반 전체 스택(권장)
 docker compose --profile app up -d
 
-# 백엔드 헬스체크
+# 2) 백엔드(컨테이너 내부가 아닌 로컬에서 직접 실행/디버그할 때)
+# 포트 사용 확인 및 기존 프로세스 종료
+ss -ltn | grep 8000       # 8000 포트 사용 프로세스 확인
+pkill -f uvicorn          # uvicorn 프로세스 종료
+pkill -f debugpy          # debugpy 프로세스 종료
+
+# 백엔드 디렉토리로 이동
+cd backend
+
+# 환경변수 설정
+export DATABASE_URL="postgresql+psycopg2://tradesmart_db:1234@localhost:5433/tradesmart_db"
+
+# 빠른 실행(개발 모드)
+uvicorn app.main:app --reload --port 8000
+
+# 디버그모드(디버거 연결 대기)
+./venv/bin/python -Xfrozen_modules=off -m debugpy --listen 5680 --wait-for-client -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# 디버거 포트 확인 (다른 터미널)
+ss -ltn | grep 5680
+
+# 3) Frontend 실행 (새 터미널에서)
+cd ~/ChartInsight-Studio/frontend
+npm run dev
+
+# 4) 헬스체크 및 간단한 API 호출
 curl -s http://localhost:8000/health
-
-# 한국 주식 대상 심볼 확인
-docker compose exec backend printenv DATABASE_URL | cat
 curl -s "http://localhost:8000/api/v1/pattern-analysis/symbols/kr-targets?limit=30"
-
-# Trading Radar 응답 소스 확인 (expect: "source":"db")
 curl -s "http://localhost:8000/trading-radar-data?symbol=005930&timeframe=5m&chart_type=candlestick&period=auto" | grep -o '"source":"[^\"]*"'
 
-# KST 타임스탬프 검증 (예시 epoch)
+# (타임존 확인 예시)
 TZ=Asia/Seoul date -d @1753929300
 ```
 
