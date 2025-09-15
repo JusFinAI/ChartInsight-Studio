@@ -8,7 +8,9 @@
 - Backend: FastAPI 기반 API 서버, DB 조회/가공
 - Frontend: Next.js(Typescript) 기반 UI, Plotly 시각화
 
-참고 보고서: `chart_pattern_analyzer_kiwoom_db에 대한 Backend 이식 및 리팩토링 보고서.md` (리팩토링/이식 작업 요약 — `backend/_temp_integration/chart_pattern_analyzer_kiwoom_db/` 참조)
+참고 보고서:
+- `document/TradeSmartAI & ChartInsight Studio 통합 개발 계획_수행 보고 (Ver 7.0).md` 
+- `document/수동 디버깅 방법.md` 
 
 ---
 
@@ -16,26 +18,26 @@
 
 ```mermaid
 graph TD
-  subgraph Frontend (Next.js)
+  subgraph "Frontend (Next.js)"
     F1[trading-radar/page.tsx]
     F2[services/api.ts]
     F3[components/ui/Chart.tsx]
   end
 
-  subgraph Backend (FastAPI)
+  subgraph "Backend (FastAPI)"
     B1[routers/pattern_analysis.py]
     B2[crud.py]
     B3[models.py]
     B4[database.py]
   end
 
-  subgraph DataPipeline (Airflow)
+  subgraph "DataPipeline (Airflow)"
     P1[dags/*]
     P2[src/database.py]
     P3[src/utils/common_helpers.py]
   end
 
-  subgraph PostgreSQL
+  subgraph "PostgreSQL"
     DB[(tradesmart_db: live.stocks, live.candles)]
   end
 
@@ -43,6 +45,7 @@ graph TD
   B1 --> B2 --> B3 --> B4 --> DB
   P1 --> P2 --> DB
   P1 --> P3
+
 ```
 
 - 데이터 흐름 요약
