@@ -6,11 +6,14 @@ import logging
 from datetime import datetime
 import atexit
 import traceback
+import inspect
+from pathlib import Path
 
-# 로그 디렉토리 생성
-logs_dir = "logs"
-if not os.path.exists(logs_dir):
-    os.makedirs(logs_dir)
+# 기본 로그 디렉토리 = 프로젝트 루트/ logs (기본)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_LOGS_DIR = PROJECT_ROOT / "logs"
+if not DEFAULT_LOGS_DIR.exists():
+    DEFAULT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 모든 파일 핸들러를 추적하기 위한 리스트
 all_handlers = []
@@ -33,12 +36,14 @@ class ImmediateFileHandler(logging.FileHandler):
         try:
             super().emit(record)
             self.flush()  # 매 로그 기록마다 즉시 파일에 플러시
-            print(f"파일에 기록 완료: {record.msg}")  # 디버깅용 출력
+            # 디버깅용 출력 제거 - 과도한 로그 방지
         except Exception as e:
-            print(f"파일 핸들러 오류: {e}")  # 오류 출력 구체화
+            # 심각한 오류만 출력
+            if record.levelno >= logging.ERROR:
+                print(f"파일 핸들러 오류: {e}")
 
 # 로깅 설정 함수
-def setup_logger(logger_name, log_file_prefix):
+def setup_logger(logger_name, log_file_prefix, logs_dir: str = None, file_level=logging.WARNING, console_level=logging.INFO):
     """
     로거 설정 함수
     
@@ -49,9 +54,13 @@ def setup_logger(logger_name, log_file_prefix):
     Returns:
         logging.Logger: 설정된 로거 인스턴스
     """
+    # 로그 디렉토리 결정
+    target_logs_dir = Path(logs_dir) if logs_dir else DEFAULT_LOGS_DIR
+    target_logs_dir.mkdir(parents=True, exist_ok=True)
+
     # 현재 날짜와 시간으로 로그 파일명 생성
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"{logs_dir}/{log_file_prefix}_{current_time}.log"
+    log_filename = str(target_logs_dir / f"{log_file_prefix}_{current_time}.log")
     
     # 로거 가져오기 (이미 존재하면 기존 로거 사용)
     logger = logging.getLogger(logger_name)
@@ -60,18 +69,18 @@ def setup_logger(logger_name, log_file_prefix):
     if logger.hasHandlers():
         logger.handlers.clear()
     
-    # 로거 레벨 설정
-    logger.setLevel(logging.DEBUG)
+    # 로거 레벨 설정: 파일/콘솔 레벨 제어는 핸들러 레벨을 통해 이루어집니다.
+    logger.setLevel(min(file_level, console_level))
     
     # 커스텀 파일 핸들러 사용 (매 로그마다 플러시)
     file_handler = ImmediateFileHandler(log_filename, mode='w')
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(file_level)
     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     
     # 콘솔 핸들러 설정
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)  # 콘솔에는 INFO 레벨 이상만 출력
+    console_handler.setLevel(console_level)  # 콘솔 레벨은 호출자가 제어
     console_formatter = logging.Formatter('%(levelname)s - %(message)s')
     console_handler.setFormatter(console_formatter)
     
@@ -92,13 +101,13 @@ def setup_logger(logger_name, log_file_prefix):
     # 파일에 즉시 기록되도록 플러시
     file_handler.flush()
     
-    # 디버그 로그로 로거 상태 기록
-    logger.debug(f"로거 상태: 이름={logger_name}, 레벨={logger.level}, 핸들러 수={len(logger.handlers)}")
+    # 로거 상태 기록을 WARNING 레벨로 변경하여 과도한 로그 방지
+    # logger.debug 제거 - 운영 환경에서 불필요
     
     return logger
 
 # 로거 인스턴스 가져오기 (이미 설정된 경우 기존 로거 반환)
-def get_logger(logger_name, log_file_prefix=None):
+def get_logger(logger_name, log_file_prefix=None, file_level=logging.WARNING, console_level=logging.INFO):
     """
     로거 인스턴스 가져오기
     
@@ -110,14 +119,38 @@ def get_logger(logger_name, log_file_prefix=None):
         logging.Logger: 로거 인스턴스
     """
     logger = logging.getLogger(logger_name)
-    
+
     # 로거가 이미 설정되어 있는지 확인
     if not logger.handlers:
         # 접두사 설정
         prefix = log_file_prefix if log_file_prefix else logger_name.split('.')[-1]
-        # 로거 설정
-        logger = setup_logger(logger_name, prefix)
-    
+
+        # 호출자 파일 경로를 기반으로 모듈별 logs 디렉토리 사용 여부 결정
+        try:
+            # 전체 스택을 스캔하여 호출자 중에 chart_pattern_analyzer_kiwoom_db 패키지가
+            # 포함된 파일이 있으면 그 파일의 모듈 폴더 아래 logs 디렉토리 사용
+            stack = inspect.stack()
+            found = False
+            logs_dir_arg = str(DEFAULT_LOGS_DIR)
+            for fr in stack:
+                try:
+                    fpath = Path(fr.filename).resolve()
+                    if 'chart_pattern_analyzer_kiwoom_db' in str(fpath):
+                        module_logs = fpath.parent / 'logs'
+                        module_logs.mkdir(parents=True, exist_ok=True)
+                        logs_dir_arg = str(module_logs)
+                        found = True
+                        break
+                except Exception:
+                    continue
+            if not found:
+                logs_dir_arg = str(DEFAULT_LOGS_DIR)
+        except Exception:
+            logs_dir_arg = str(DEFAULT_LOGS_DIR)
+
+        # 로거 설정 (호출자가 원하는 레벨 전달)
+        logger = setup_logger(logger_name, prefix, logs_dir=logs_dir_arg, file_level=file_level, console_level=console_level)
+
     return logger
 
 # 로깅 레벨 변환 함수

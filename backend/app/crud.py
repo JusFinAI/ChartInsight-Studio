@@ -28,9 +28,11 @@ _FRONTEND_TO_DB_TIMEFRAME = {
     "30m": "M30",
     # hours
     "1h": "H1",
+    "60m": "H1",
     # days/weeks
     "1d": "D",
     "1w": "W",
+    "1wk": "W",
 }
 
 

@@ -91,7 +91,6 @@ from app.routers.pattern_analysis import (
     get_js_points, 
     get_patterns, 
     get_price_levels, 
-    get_trend_info,
     get_market_data,
     get_trading_radar_data
 )
@@ -101,7 +100,6 @@ app.add_api_route("/chart-data", get_chart_data, methods=["GET"])
 app.add_api_route("/js-points", get_js_points, methods=["GET"])
 app.add_api_route("/patterns", get_patterns, methods=["GET"])
 app.add_api_route("/price-levels", get_price_levels, methods=["GET"])
-app.add_api_route("/trend-info", get_trend_info, methods=["GET"])
 app.add_api_route("/market-data", get_market_data, methods=["GET"])
 app.add_api_route("/trading-radar-data", get_trading_radar_data, methods=["GET"])
 

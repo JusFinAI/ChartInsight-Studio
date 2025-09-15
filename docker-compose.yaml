@@ -43,6 +43,8 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+    profiles:      # ⬅️ [추가] 이 서비스가 pipeline 그룹의 일부임을 명시
+      - pipeline
     networks:
       - chartinsight-network
 

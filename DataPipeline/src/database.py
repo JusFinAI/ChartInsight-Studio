@@ -53,7 +53,7 @@ class Candle(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)  # 자동 증가 Primary Key
     stock_code = Column(String(20), ForeignKey("live.stocks.stock_code"), index=True, nullable=False)  # 외래 키
-    timestamp = Column(DateTime(timezone=True), index=True, nullable=False)  # KST 포함 시간
+    timestamp = Column(DateTime(timezone=True), index=True, nullable=False)  # timezone-aware (DB에서 UTC로 정규화)
     timeframe = Column(String(10), index=True, nullable=False)  # 'D', 'W', 'M5', 'M30', 'H1'
     open = Column(Numeric(15, 4), nullable=False)   # 시가 (정밀도 향상)
     high = Column(Numeric(15, 4), nullable=False)   # 고가

@@ -141,14 +141,14 @@ def _db_upsert_candles(db: Session, stock_code: str, timeframe: str, df_candles:
             if not isinstance(timestamp, datetime):
                 timestamp = pd.Timestamp(timestamp).to_pydatetime()
             
-            candle_timestamp_kst = timestamp
+            candle_timestamp = timestamp
             
-            # timezone-naive 타임스탬프를 KST로 localize 후 UTC로 변환
-            if candle_timestamp_kst.tzinfo is None:
-                candle_timestamp_kst = candle_timestamp_kst.replace(tzinfo=ZoneInfo('Asia/Seoul'))
+            # timezone-naive 타임스탬프를 KST로 localize
+            if candle_timestamp.tzinfo is None:
+                candle_timestamp = candle_timestamp.replace(tzinfo=ZoneInfo('Asia/Seoul'))
             
-            # 비교를 위해 KST를 UTC로 변환 (DB의 existing_timestamps는 UTC)
-            candle_timestamp_utc = candle_timestamp_kst.astimezone(ZoneInfo('UTC'))
+            # KST tz-aware를 UTC로 변환하여 기존 데이터와 비교
+            candle_timestamp_utc = candle_timestamp.astimezone(ZoneInfo('UTC'))
             
             if candle_timestamp_utc not in existing_timestamps:
                 # 컬럼명 매핑 (키움 API 응답 형식 지원)
@@ -178,7 +178,7 @@ def _db_upsert_candles(db: Session, stock_code: str, timeframe: str, df_candles:
                 
                 new_candle = Candle(
                     stock_code=stock_code,
-                    timestamp=candle_timestamp_kst,  # 저장은 원래 KST 시간 사용
+                    timestamp=candle_timestamp,  # KST tz-aware 저장 (PostgreSQL이 자동으로 UTC로 정규화)
                     timeframe=timeframe_str,
                     open=open_val,
                     high=high_val,
