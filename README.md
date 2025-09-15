@@ -97,50 +97,65 @@ graph TD
 ```
 ChartInsight-Studio/
 ├─ docker-compose.yaml
+├─ README.md
+├─ document/
+│  ├─ TradeSmartAI & ChartInsight Studio 통합 개발 계획_수행 보고 (Ver 7.0).md
+│  └─ 수동 디버깅 방법.md
 ├─ DataPipeline/
-│  ├─ dags/                            # Airflow DAGs: 초기 적재 및 증분 업데이트
-+│  ├─ src/
-│  │  ├─ database.py                   # 파이프라인용 DB 접속/모델 정의 (Candle/Stock)
-│  │  ├─ utils/common_helpers.py       # 파이프라인 유틸(대상 종목 조회 등)
-│  │  └─ ...
-│  ├─ data/                            # 테스트/샘플 데이터
-│  └─ docs/                            # 파이프라인 운영자용 문서(선택)
+│  ├─ dags/                            # Airflow DAGs (초기 적재 및 증분 업데이트)
+│  │  ├─ dag_initial_loader.py         # 초기(legacy) 적재 DAG
+│  │  ├─ dag_live_collectors.py        # 실시간/지속 수집 관련 DAG
+│  │  ├─ dag_simulation_tester.py      # 시뮬레이션/테스트 DAG
+│  │  └─ data_collector_test_dag.py    # 수집기 테스트용 DAG
+│  │  # (추가 수집 주기별 DAG들이 존재할 수 있음: dag_5min_collector 등)
+│  ├─ src/
+│  │  ├─ database.py                   # 파이프라인 DB 접속/ORM 및 모델 정의 (Candle/Stock)
+│  │  └─ utils/
+│  │     └─ common_helpers.py          # 파이프라인 유틸(타겟 종목 조회 등)
+│  └─ docs/                            # 운영자/운영 문서
 ├─ backend/
 │  ├─ app/
-│  │  ├─ main.py                       # FastAPI 앱 생성 및 라우터 등록
+│  │  ├─ main.py                       # FastAPI 앱 엔트리 (앱 생성, 라우터 등록)
 │  │  ├─ routers/
-│  │  │  └─ pattern_analysis.py        # Trading Radar 통합 API 라우터
-│  │  ├─ crud.py                       # DB 조회 추상화 (예: get_candles)
-│  │  ├─ models.py                     # ORM 모델(live.candles, live.stocks)
-│  │  └─ database.py                   # SQLAlchemy 엔진/세션 구성
+│  │  │  └─ pattern_analysis.py        # Trading Radar 관련 엔드포인트
+│  │  ├─ crud.py                       # DB 조회/비즈니스 로직 래퍼 (get_candles 등)
+│  │  ├─ models.py                     # ORM 모델 정의 (live.candles, live.stocks)
+│  │  └─ database.py                   # SQLAlchemy 엔진/세션 + DI 헬퍼
 │  ├─ _temp_integration/
-│  │  └─ chart_pattern_analyzer_kiwoom_db/  # 리팩토링/이식 준비된 실험 코드 (이전 v3 이름 변경)
-│  │     ├─ run_full_analysis_impl.py  # 분석 엔진: DataFrame 입력 → 패턴/추세 분석 출력
-│  │     │   - 입력: pandas.DataFrame (time, open, high, low, close, volume, ...) - UTC epoch seconds
-│  │     │   - 출력: { patterns: [...], js_points: {peaks, valleys}, trend_periods: [...], price_levels: [...] }
-│  │     ├─ data_loader.py              # DB → pandas.DataFrame (UTC→Asia/Seoul 변환 포함)
-│  │     │   - 역할: DB 쿼리 래핑, timezone 변환, 필요한 컬럼 정리
-│  │     │   - 권장 시그니처: load_candles_from_db(session, stock_code, timeframe, period=None, limit=None, tz='Asia/Seoul')
-│  │     │   - 입력 예시:
-│  │     │     ```python
-│  │     │     df = load_candles_from_db(db_session, '005930', '1d', period='2y')
-│  │     │     # 반환: pandas.DataFrame with columns [time (epoch sec), open, high, low, close, volume]
-│  │     │     ```
-│  │     │   - 출력 예시 (DataFrame sample):
-│  │     │     ```
-│  │     │     time, open, high, low, close, volume
-│  │     │     1753920000, 80000, 80500, 79500, 80200, 12345
-│  │     │     ```
-│  │     ├─ main_dashboard.py           # 개발용 런처 및 데모 스크립트
-│  │     ├─ logger_config.py            # 로거 설정(이식 시 앱 startup에서만 핸들러 추가)
-│  │     └─ 기타 실험용 스크립트
+│  │  └─ chart_pattern_analyzer_kiwoom_db/
+│  │     ├─ run_full_analysis_impl.py  # 분석 엔진: DataFrame -> patterns, js_points, trend_periods
+│  │     ├─ data_loader.py              # DB -> pandas.DataFrame (UTC → Asia/Seoul 변환 포함)
+│  │     └─ logger_config.py
 │  ├─ requirements.txt
 │  └─ Dockerfile
 ├─ frontend/
 │  ├─ src/
-│  │  ├─ app/trading-lab/trading-radar/page.tsx    # Trading Radar UI: 토글/필터/데이터 로드 로직
-│  │  ├─ services/api.ts                           # API 클라이언트 래퍼 (fetchTradingRadarData 등)
-│  │  └─ components/ui/Chart.tsx                   # Plotly 렌더링: epoch → ms 변환, 피크/밸리/넥라인 처리
+│  │  ├─ app/
+│  │  │  ├─ page.tsx                    # 앱 루트 페이지
+│  │  │  ├─ layout.tsx                  # 전역 레이아웃
+│  │  │  ├─ globals.css                 # 전역 스타일
+│  │  │  ├─ favicon.ico
+│  │  │  ├─ trading-lab/
+│  │  │  │  ├─ page.tsx                 # Trading Lab 메인
+│  │  │  │  ├─ trading-radar/page.tsx   # Trading Radar UI (토글/필터/데이터 로드)
+│  │  │  │  ├─ trading-journal/page.tsx # Trading Journal
+│  │  │  │  ├─ live-scanner/page.tsx    # 실시간 스캐너 UI
+│  │  │  │  ├─ backtest-lab/page.tsx    # 백테스트 랩
+│  │  │  │  └─ pattern-strategy-analyzer/page.tsx
+│  │  │  ├─ pattern-studio/
+│  │  │  │  ├─ page.tsx                 # 패턴 스튜디오 메인
+│  │  │  │  └─ pattern-library/page.tsx  # 패턴 라이브러리
+│  │  │  ├─ knowledge-hub/
+│  │  │  │  ├─ page.tsx                 # 지식 허브 메인
+│  │  │  │  └─ price-action/page.tsx    # 가격 행동 아티클
+│  │  │  └─ community/
+│  │  │     ├─ page.tsx                 # 커뮤니티 메인
+│  │  │     └─ trading-ideas/page.tsx   # 아이디어 공유
+│  │  ├─ services/
+│  │  │  └─ api.ts                      # API 클라이언트 래퍼 (fetchTradingRadarData 등)
+│  │  └─ components/
+│  │     └─ ui/
+│  │        └─ Chart.tsx                # Plotly 기반 차트 컴포넌트 (epoch→ms 변환, 오버레이)
 │  ├─ next.config.ts
 │  └─ Dockerfile
 ```
@@ -149,54 +164,44 @@ ChartInsight-Studio/
 
 ## 주요 파일/모듈
 
- - Backend
-  - `app/main.py`: FastAPI 앱 생성, 라우터 등록, `/health` 등 기본 엔드포인트 구성
-  - `app/routers/pattern_analysis.py`: Trading Radar 통합 API 라우터
-    - `GET /api/v1/pattern-analysis/trading-radar-data` — 차트/JS 포인트/패턴/추세 정보를 통합 반환
-    - `GET /api/v1/pattern-analysis/symbols/kr-targets` — 한국 주식 대상 심볼 목록 반환
-    - 내부 동작: DB 조회 결과(UTC)를 KST로 변환해 epoch seconds로 응답, `period` 파라미터 해석 포함
-  - `app/crud.py`: DB 조회 추상화
-    - `get_candles(...)`: 특정 심볼/타임프레임/기간의 캔들 데이터 반환(UTC 기준)
-    - `get_latest_candles(...)`, `get_time_range(...)` 등 재사용 가능한 쿼리 함수 포함
-  - `app/models.py`: ORM 모델 정의 (`live.candles`, `live.stocks`), 스키마/인덱스 반영
-  - `app/database.py`: SQLAlchemy 엔진/세션 설정 및 `get_db()` DI 헬퍼
-  - `_temp_integration/chart_pattern_analyzer_kiwoom_db/` (이식 준비 폴더)
-    - `run_full_analysis_impl.py`: 분석 엔진의 핵심 구현체
-      - 입력 예시:
-        ```python
-        # pandas.DataFrame (UTC epoch seconds)
-        df.head()
-        # time, open, high, low, close, volume
-        ```
-      - 출력 예시:
-        ```json
-        {
-          "patterns": [{"pattern_type":"HS","startTime":...,"endTime":...}],
-          "js_points": {"peaks": [{"time":...,"value":...}], "valleys": [...]},
-          "trend_periods": [{"type":"Uptrend","start":...,"end":...}],
-          "price_levels": [{"type":"support","value":...}]
-        }
-        ```
-      - 입력: pandas.DataFrame (캔들 데이터, UTC)
-      - 출력: 패턴(HS/IHS/DT/DB), 피크/밸리(JSPoints), 추세 기간(trend_periods), 넥라인/가격 레벨
-      - 변경 포인트: 시각화·다운로드 의존 제거, 모듈 레벨 부작용 제거, `logging.getLogger(__name__)` 사용
-    - `data_loader.py`: DB에서 캔들 데이터를 로드해 pandas.DataFrame으로 반환
-      - 기능: `get_candles` 호출 래핑, UTC 로컬화 후 `tz_convert('Asia/Seoul')` 수행, 필요한 컬럼 정리
-      - 권장 인터페이스: `load_candles_from_db(session, stock_code, timeframe, period=None, limit=None, tz='Asia/Seoul')`
-    - `main_dashboard.py`: 개발/데모용 런처 스크립트
-      - 역할: 독립 실행 환경에서 엔진을 호출하고 결과를 시각화하는 간단한 데모 파이프라인
-      - 주의: 운영으로 복사 시 모듈 임포트 부작용(핸들러/파일생성)이 없는지 확인 필요
-    - `logger_config.py`: 과거 v3용 로거 설정 모듈(이식 시 앱 startup에서만 핸들러 추가하도록 변경 권장)
+- **Backend** (`backend/app`)
+  - `main.py` — FastAPI 앱 엔트리. CORS, 요청 로깅 미들웨어, 라우터/호환 엔드포인트(`/chart-data`, `/trading-radar-data` 등) 등록.
+  - `routers/pattern_analysis.py` — Trading Radar 관련 라우터. 주요 엔드포인트:
+    - `/pattern-analysis/symbols/kr-targets` (한국 주식 대상 목록)
+    - `/pattern-analysis/chart-data`, `/pattern-analysis/js-points`, `/pattern-analysis/patterns`, `/pattern-analysis/price-levels`
+    - `/trading-radar-data` (프론트 통합 응답): DB 조회(KR 코드), 엔진 호출, KST 변환 및 통합 포맷 반환
+  - `crud.py` — DB 조회 유틸(예: `get_candles`, `get_latest_candles`, `normalize_timeframe`)로 라우터와 분석 엔진 사이의 추상 계층 제공
+  - `models.py` — SQLAlchemy ORM 모델(`live.candles`, `live.stocks` 등)
+  - `database.py` — SQLAlchemy 엔진 및 `SessionLocal`/`get_db()` DI 헬퍼
+  - `services/`
+    - `data_loader.py` — `load_candles_from_db(...)` 같은 DB→pandas 래퍼(UTC→Asia/Seoul 변환 포함)
+    - `peak_valley_detector.py` — JS 포인트(피크/밸리) 검출 유틸
+  - `utils/`
+    - `logger_config.py` — 중앙 로거 설정(파일 핸들러, 포맷, 로테이션)
+    - `data_loader.py` — 외부 데이터 다운로드·보정 헬퍼 (엔진/샘플 데이터용)
+    - `cache.py` — 간단 캐시 유틸
+  - `analysis/engine_impl.py` — 핵심 분석 엔진(`run_full_analysis`): DataFrame→patterns, peaks/valleys, trend_periods, price_levels 반환
+  - `kiwoom/` — 키움 통합 유틸 (예: `minute_chart.py`, `daily_chart.py`, `weekly_chart.py`, `auth.py`, `config.py`) — DataPipeline/백엔드에서의 외부 데이터 적재/테스트용 모듈
+  - `_temp_integration/chart_pattern_analyzer_kiwoom_db/` — 실험·이식용 스크립트(이전 버전 코드)
 
-- Frontend
-  - `src/app/trading-lab/trading-radar/page.tsx`: Trading Radar UI, 기본 심볼 `005930`
-  - `src/services/api.ts`: `fetchTradingRadarData`, `fetchKrTargetSymbols` 등
-  - `src/components/ui/Chart.tsx`: Plotly 차트(ms 변환)
+- **Frontend** (`frontend/src`)
+  - `app/` — Next.js 앱 라우트
+    - `page.tsx` (앱 루트), `layout.tsx` (전역 레이아웃), `globals.css`, `favicon.ico`
+    - `trading-lab/` — Trading 관련 서브앱
+      - `page.tsx` (Trading Lab 메인)
+      - `trading-radar/page.tsx` (Trading Radar UI: 토글/필터/데이터 로드)
+      - `trading-journal/page.tsx`, `live-scanner/page.tsx`, `backtest-lab/page.tsx`, `pattern-strategy-analyzer/page.tsx`
+    - `pattern-studio/`, `knowledge-hub/`, `community/` 등 페이지 폴더
+  - `services/api.ts` — API 클라이언트 래퍼 (`fetchTradingRadarData`, `fetchKrTargetSymbols`, 공통 응답 파싱 및 에러 처리)
+  - `components/ui/Chart.tsx` — Plotly 차트 컴포넌트(epoch→ms 변환, JS 포인트/패턴/추세 오버레이, volume 표시)
 
-- DataPipeline
-  - `src/database.py`: 파이프라인 기준 ORM(스키마: `live`), `Candle`/`Stock`
-  - `src/utils/common_helpers.py`: `get_target_stocks()` (타겟 30개)
-  - `dags/*`: 초기 적재/증분 업데이트 DAG
+- **DataPipeline** (`DataPipeline`)
+  - `dags/` — Airflow DAGs (초기 적재, 증분 수집, 테스트용 DAG)
+    - `dag_initial_loader.py`, `dag_live_collectors.py`, `dag_simulation_tester.py`, `data_collector_test_dag.py`, 등(주기별 collector DAG 포함)
+  - `src/database.py` — 파이프라인용 DB 접속/모델 정의 (Candle/Stock)
+  - `src/utils/common_helpers.py` — 운영 유틸(타겟 종목 조회 등)
+
+(필요하면 각 파일별 더 자세한 책임/함수 목록을 추가해 드립니다.)
 
 ---
 
