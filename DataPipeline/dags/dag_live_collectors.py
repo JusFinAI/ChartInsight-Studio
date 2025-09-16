@@ -60,7 +60,8 @@ for timeframe, config in DAG_CONFIGS.items():
                 python_callable=_run_live_task,
                 op_kwargs={
                     'stock_code': stock_code,
-                    'timeframe': timeframe # data_collector는 '5m', '1h' 형식 사용
+                    # 정규화: DAG 레벨에서 'daily'/'weekly'을 collector가 기대하는 'd'/'w'로 변환
+                    'timeframe': ('d' if timeframe == 'daily' else ('w' if timeframe == 'weekly' else timeframe))
                 },
                 pool='kiwoom_api_pool' # API 호출 제한을 위한 Pool 사용 (매우 중요!)
             )

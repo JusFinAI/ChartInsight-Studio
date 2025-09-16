@@ -198,6 +198,7 @@ ChartInsight-Studio/
 - **DataPipeline** (`DataPipeline`)
   - `dags/` — Airflow DAGs (초기 적재, 증분 수집, 테스트용 DAG)
     - `dag_initial_loader.py`, `dag_live_collectors.py`, `dag_simulation_tester.py`, `data_collector_test_dag.py`, 등(주기별 collector DAG 포함)
+      - 참고: `dag_live_collectors.py`는 **하나의 파일에서 여러 DAG id를 동적으로 생성**합니다. 예: `dag_daily_collector`, `dag_weekly_collector`, `dag_5m_collector` 등 — UI에 표시되는 여러 DAG은 이 파일이 생성한 것입니다.
   - `src/database.py` — 파이프라인용 DB 접속/모델 정의 (Candle/Stock)
   - `src/utils/common_helpers.py` — 운영 유틸(타겟 종목 조회 등)
 

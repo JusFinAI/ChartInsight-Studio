@@ -21,6 +21,7 @@ yarn-error.log*
 .vscode/
 .idea/
 
+
 # Frontend (Next.js)
 frontend/node_modules/
 frontend/.next/
@@ -35,6 +36,7 @@ DataPipeline/venv/
 DataPipeline/logs/
 DataPipeline/data/
 DataPipeline/output/
+DataPipeline/venv/lib64/python3.12/site-packages
 
 # Airflow
 airflow/logs/

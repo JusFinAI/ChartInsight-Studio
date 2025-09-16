@@ -105,18 +105,25 @@ def _db_upsert_candles(db: Session, stock_code: str, timeframe: str, df_candles:
         # 기존 데이터 조회 (배치로 한번에)
         timeframe_str = TIMEFRAME_TO_DB_FORMAT.get(timeframe, timeframe)
         
-        # DataFrame에서 timestamp 추출 (data_collector_test.py 방식 적용)
+        # DataFrame에서 timestamp 추출 및 UTC로 정규화 (멱등성 비교용)
         timestamps = []
         for idx, row in df_candles.iterrows():
+            # 원본 타임스탬프 추출 (열 우선, 없으면 인덱스 사용)
             if 'timestamp' in df_candles.columns:
                 timestamp = row['timestamp']
             else:
                 timestamp = idx  # DataFrame 인덱스 사용 (키움 API 방식)
-            
-            if not isinstance(timestamp, datetime):
-                timestamp = pd.Timestamp(timestamp).to_pydatetime()
-            
-            timestamps.append(timestamp)
+
+            # pandas Timestamp로 통일
+            ts = pd.Timestamp(timestamp)
+
+            # timezone-naive인 경우 KST로 가정하여 localize
+            if ts.tz is None:
+                ts = ts.tz_localize(ZoneInfo('Asia/Seoul'))
+
+            # 비교는 DB(UTC) 기준이므로 UTC로 변환
+            ts_utc = ts.tz_convert(ZoneInfo('UTC')).to_pydatetime()
+            timestamps.append(ts_utc)
         
         # 기존 데이터 배치 조회
         existing_timestamps = set()
@@ -176,9 +183,10 @@ def _db_upsert_candles(db: Session, stock_code: str, timeframe: str, df_candles:
                     logger.error(f"[{stock_code}] 필수 컬럼 값을 찾을 수 없습니다. 사용 가능한 컬럼: {list(row.index)}")
                     continue
                 
+                # DB는 UTC로 저장하므로, UTC tz-aware를 사용하여 Candle 객체 생성
                 new_candle = Candle(
                     stock_code=stock_code,
-                    timestamp=candle_timestamp,  # KST tz-aware 저장 (PostgreSQL이 자동으로 UTC로 정규화)
+                    timestamp=candle_timestamp_utc,
                     timeframe=timeframe_str,
                     open=open_val,
                     high=high_val,
@@ -542,8 +550,10 @@ def load_initial_history(stock_code: str, timeframe: str, base_date: str = None,
             logger.info(f"[{stock_code}] 초기 이력 데이터 적재 완료: {upserted_count}개")
             return True
         else:
-            logger.info(f"[{stock_code}] 새로 추가된 데이터가 없습니다.")
-            return False
+            # 이미 DB에 동일한 데이터가 있어 새로 추가된 데이터가 없는 경우는
+            # 멱등성 관점에서 실패가 아닌 정상 상황이므로 성공으로 처리합니다.
+            logger.info(f"[{stock_code}] 새로 추가된 데이터가 없습니다. (이미 최신 상태)")
+            return True
             
     except Exception as e:
         logger.error(f"[{stock_code}] 초기 이력 데이터 적재 중 오류 발생: {e}")

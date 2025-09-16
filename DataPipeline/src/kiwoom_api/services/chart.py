@@ -235,7 +235,16 @@ class ChartService:
                     headers = response['headers']
                     
                     # 응답 헤더 확인
-                    print(f"응답 헤더: {json.dumps({key: headers.get(key) for key in ['next-key', 'cont-yn', 'api-id']}, indent=2, ensure_ascii=False)}")
+                    # headers는 client.request()에서 반환한 normalized dict일 수도 있고,
+                    # 혹은 외부 API의 원본 형태일 수도 있으므로 다양한 키를 허용하여 정규화합니다.
+                    print(f"응답 헤더(raw): {json.dumps(headers, ensure_ascii=False)}")
+
+                    # 호환성 보정: 하이픈(-) 또는 언더스코어(_) 형태 모두 처리
+                    normalized_cont_yn = headers.get('cont-yn') or headers.get('cont_yn') or headers.get('cont-yn'.lower()) or headers.get('cont_yn'.lower()) or 'N'
+                    normalized_next_key = headers.get('next-key') or headers.get('next_key') or headers.get('next-key'.lower()) or headers.get('next_key'.lower()) or ''
+                    normalized_api_id = headers.get('api-id') or headers.get('api_id') or headers.get('api-id'.lower()) or headers.get('api_id'.lower()) or ''
+
+                    print(f"응답 헤더(normalized): {{'cont_yn': '{normalized_cont_yn}', 'next_key': '{normalized_next_key}', 'api_id': '{normalized_api_id}'}}")
                     
                 except Exception as e:
                     print(f"API 요청 중 오류 발생: {e}")
@@ -401,10 +410,10 @@ class ChartService:
                 if target_reached:
                     break
                 
-                # 연속 조회 정보 업데이트
-                cont_yn = headers.get('cont-yn', 'N')
-                next_key = headers.get('next-key', '')
-                
+                # 연속 조회 정보 업데이트 (정규화된 값 사용)
+                cont_yn = normalized_cont_yn
+                next_key = normalized_next_key
+
                 print(f"연속 조회 정보: cont_yn={cont_yn}, next_key={next_key}")
                 
                 # 연속 조회가 아니거나 자동 페이징이 아니면 종료

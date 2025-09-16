@@ -129,25 +129,34 @@ def _run_initial_load_task(**kwargs):
         print(f"\n{'='*60}")
         print(f"🚀 일괄 초기 적재 작업을 시작합니다")
         print(f"📊 전체 타겟 종목 수: 30개")
-        print(f"⏰ 타임프레임: {TARGET_TIMEFRAMES}")
+        # timeframes 파라미터 우선 처리: config의 'timeframes'(리스트) 또는 'timeframe'(문자열)을 허용
+        requested_timeframes = config.get('timeframes') if 'timeframes' in config else config.get('timeframe')
+        if isinstance(requested_timeframes, list) and requested_timeframes:
+            timeframes_to_process = requested_timeframes
+        elif isinstance(requested_timeframes, str) and requested_timeframes.strip():
+            timeframes_to_process = [requested_timeframes.strip()]
+        else:
+            timeframes_to_process = TARGET_TIMEFRAMES
+
+        print(f"⏰ 타임프레임: {timeframes_to_process}")
         print(f"📅 기준일: {base_date or '현재 날짜'}")
         print(f"📆 기간: {period}")
         print(f"🔧 실행 모드: {execution_mode}")
         print(f"{'='*60}\n")
-        
+
         # 타겟 종목 가져오기
         target_stocks = get_target_stocks()
         if not target_stocks:
             raise AirflowException("타겟 종목 목록을 가져올 수 없습니다")
-        
+
         success_count = 0
         fail_count = 0
-        total_tasks = len(target_stocks) * len(TARGET_TIMEFRAMES)
+        total_tasks = len(target_stocks) * len(timeframes_to_process)
         current_task = 0
         
-        # 이중 반복문으로 모든 조합 처리
+        # 이중 반복문으로 모든 조합 처리 (timeframes_to_process 사용)
         for stock_code in target_stocks:
-            for timeframe in TARGET_TIMEFRAMES:
+            for timeframe in timeframes_to_process:
                 current_task += 1
                 print(f"\n[{current_task}/{total_tasks}] 처리 중: {stock_code} - {timeframe}")
                 
@@ -207,7 +216,7 @@ def _run_initial_load_task(**kwargs):
             success_count = 0
             fail_count = 0
             
-            for timeframe in TARGET_TIMEFRAMES:
+            for timeframe in timeframes_to_process:
                 print(f"\n처리 중: {stock_code} - {timeframe}")
                 
                 try:
@@ -373,6 +382,12 @@ with DAG(
             title="타임프레임 (직접 입력)",
             description="5m, 30m, 1h, d, w 중 하나 입력. 비워두면 모든 타임프레임 처리"
             # enum 옵션을 완전히 제거합니다.
+        ),
+        "timeframes": Param(
+            type=["null", "array"],
+            default=None,
+            title="타임프레임 목록 (일괄 작업용)",
+            description="일괄 작업 시 특정 타임프레임만 선택 (예: [\"d\", \"w\"]). 비워두면 모든 타임프레임 처리"
         ),
         "period": Param(
             type=["null", "string"], 
