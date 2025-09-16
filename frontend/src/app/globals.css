@@ -1,0 +1,114 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 기본 스타일 */
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', 'Roboto', sans-serif;
+  line-height: 1.5;
+  font-size: 16px;
+}
+
+/* Plotly modebar 위치 보정 */
+.js-plotly-plot .modebar-container {
+  position: absolute !important;
+  top: 6px !important;
+  right: 10px !important;
+  z-index: 1000 !important;
+  width: auto !important;
+  height: auto !important;
+  pointer-events: none !important;
+}
+.js-plotly-plot .modebar {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  left: auto !important;
+  right: 0 !important;
+  top: 0 !important;
+  width: auto !important;
+  height: auto !important;
+}
+.js-plotly-plot .modebar-group {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.js-plotly-plot .modebar .modebar-btn {
+  pointer-events: auto !important;
+}
+.js-plotly-plot .plotly,
+.js-plotly-plot .bg,
+.js-plotly-plot .paper {
+  background: transparent !important;
+}
+
+:root {
+  /* 라이트 모드 기본 색상 */
+  --background: #F1F5F9;
+  --foreground: #0F172A;
+  --primary: #3B82F6;
+  --secondary: #10B981;
+  --warning: #F97316;
+  --special: #8B5CF6;
+  --neutral-900: #0F172A;
+  --neutral-800: #1E293B;
+  --neutral-600: #64748B;
+  --neutral-300: #CBD5E1;
+  --neutral-100: #F1F5F9;
+  --neutral-50: #FFFFFF;
+  --header-height: 64px;
+  --sidebar-width: 240px;
+  --header-mobile-height: 56px;
+}
+
+/* 다크 모드 색상 */
+.dark {
+  --background: #0F172A;
+  --foreground: #F1F5F9;
+  --primary: #60A5FA;
+  --secondary: #34D399;
+  --neutral-900: #FFFFFF;
+  --neutral-800: #F1F5F9;
+  --neutral-600: #CBD5E1;
+  --neutral-300: #64748B;
+  --neutral-100: #1E293B;
+  --neutral-50: #0F172A;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: #0F172A;
+    --foreground: #F1F5F9;
+    --primary: #60A5FA;
+    --secondary: #34D399;
+    --neutral-900: #FFFFFF;
+    --neutral-800: #F1F5F9;
+    --neutral-600: #CBD5E1;
+    --neutral-300: #64748B;
+    --neutral-100: #1E293B;
+    --neutral-50: #0F172A;
+  }
+}
+
+@layer components {
+  .text-title {
+    @apply text-2xl leading-8 font-semibold;
+  }
+  
+  .text-body {
+    @apply text-base leading-6 font-normal;
+  }
+  
+  .text-small {
+    @apply text-sm leading-5 font-normal;
+  }
+}
