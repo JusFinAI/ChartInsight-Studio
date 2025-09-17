@@ -46,11 +46,8 @@ from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.analysis import 
 from backend.app.database import SessionLocal
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.data_loader import load_candles_from_db
 import pandas as pd
-from dash import dcc, html, Input, Output, State, callback, ALL
-import json
-import ast
+from dash import dcc, html, Input, Output, State, callback
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # 독립 실행 레이아웃용 한국 종목 로더 헬퍼
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.korean_stock_loader import (
@@ -152,24 +149,9 @@ app.layout = html.Div([
             {'label':'ZigZag Line','value':'show_zigzag'},
             {'label':'Double Bottom/Top','value':'show_dt_db'},
             {'label':'(Inv) Head & Shoulder','value':'show_hs_ihs'},
-        ], value=['show_trend_background'], inline=True, style={'display':'flex','flexWrap':'wrap','gap':'10px','marginBottom':'5px'})
+        ], value=['show_trend_background','show_zigzag'], inline=True, style={'display':'flex','flexWrap':'wrap','gap':'10px','marginBottom':'5px'})
     ]),
-    # Indicator controls
-    html.Div([
-        html.H3('Indicators:', style={'marginBottom':'5px','marginTop':'5px'}),
-        dcc.Checklist(id='checklist-indicators', options=[
-            {'label':'SMA','value':'SMA'},
-            {'label':'EMA','value':'EMA'},
-            {'label':'RSI','value':'RSI'},
-            {'label':'MACD','value':'MACD'},
-            {'label':'Bollinger','value':'BBANDS'},
-            {'label':'ATR','value':'ATR'},
-            {'label':'OBV','value':'OBV'},
-        ], value=[], inline=True, style={'display':'flex','flexWrap':'wrap','gap':'10px','marginBottom':'5px'})
-    ]),
-    # Dynamic indicator remove buttons (one button per dynamic row)
-    html.Div(id='dynamic-ind-buttons', style={'marginTop':'8px','marginBottom':'8px'}),
-    dcc.Loading(id='loading-graph', type='circle', children=[dcc.Graph(id='analysis-graph', figure=go.Figure(layout={'height':800, 'dragmode':'pan'}), config={'scrollZoom':True})])
+    dcc.Loading(id='loading-graph', type='circle', children=[dcc.Graph(id='analysis-graph', figure=go.Figure(layout={'height':800}), config={'scrollZoom':True})])
 ], style={'padding':'10px'})
 
 
@@ -180,56 +162,8 @@ def update_ticker_options(selected_category):
     return options, default_value
 
 
-@callback(Output('dynamic-ind-buttons','children'), Input('checklist-indicators','value'))
-def render_dynamic_buttons(selected_indicators):
-    # create small 'x' buttons for dynamic indicators and place them above the graph
-    dyn = [i for i in (selected_indicators or []) if i in ('RSI', 'MACD', 'ATR', 'OBV')]
-    children = []
-    for ind in dyn:
-        btn = html.Button(
-            f"✖ {ind}",
-            id={'type':'dyn-btn','index':ind},
-            n_clicks=0,
-            style={'marginRight':'8px','backgroundColor':'#eee','border':'1px solid #bbb','borderRadius':'4px','padding':'4px 8px','fontSize':'12px'}
-        )
-        children.append(btn)
-    return children
-
-
-@callback(Output('checklist-indicators','value'), Input({'type':'dyn-btn','index':ALL}, 'n_clicks'), State('checklist-indicators','value'), prevent_initial_call=True)
-def handle_dyn_button_click(n_clicks_list, checklist_values):
-    # determine which dynamic button was clicked via callback context and remove it from checklist
-    ctx = dash.callback_context
-    # Ignore cases where no button was actually clicked (e.g. buttons were recreated => n_clicks default 0)
-    if not n_clicks_list or all((n is None or n == 0) for n in n_clicks_list):
-        return dash.no_update
-    if not ctx.triggered:
-        return dash.no_update
-    # only proceed if at least one button reports a positive click count
-    positive_clicks = [((i or 0)) for i in n_clicks_list]
-    if not any(c > 0 for c in positive_clicks):
-        return dash.no_update
-
-    # determine which dyn button corresponds to the clicked input by index
-    # the order of n_clicks_list corresponds to the order of dynamic buttons,
-    # which follows the order of checklist_values filtered for dynamic inds
-    dyn = [v for v in (checklist_values or []) if v in ('RSI', 'MACD', 'ATR', 'OBV')]
-    if not dyn:
-        return dash.no_update
-    # pick the index with the largest click count (most likely the most recently clicked)
-    try:
-        idx_clicked = int(max(range(len(positive_clicks)), key=lambda i: positive_clicks[i]))
-    except Exception:
-        return dash.no_update
-    if idx_clicked < 0 or idx_clicked >= len(dyn):
-        return dash.no_update
-    ind = dyn[idx_clicked]
-    new_vals = [v for v in checklist_values if v != ind]
-    return new_vals
-
-
-@callback(Output('analysis-graph','figure'), Input('button-run-analysis','n_clicks'), Input('checklist-options','value'), Input('checklist-indicators','value'), State('dropdown-ticker','value'), State('dropdown-interval','value'), State('dropdown-category','value'), prevent_initial_call=True)
-def update_graph(n_clicks, selected_options, selected_indicators, ticker, interval, category):
+@callback(Output('analysis-graph','figure'), Input('button-run-analysis','n_clicks'), Input('checklist-options','value'), State('dropdown-ticker','value'), State('dropdown-interval','value'), State('dropdown-category','value'), prevent_initial_call=True)
+def update_graph(n_clicks, selected_options, ticker, interval, category):
     """Graph updater with caching: when only the checklist changes, reuse
     last analysis results and data to avoid re-running expensive analysis.
     """
@@ -249,7 +183,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
     except Exception:
         triggered_id = getattr(ctx, 'triggered_id', 'No trigger')
 
-    is_checklist_trigger = (triggered_id == 'checklist-options' or triggered_id == 'checklist-indicators')
+    is_checklist_trigger = (triggered_id == 'checklist-options')
 
     # If checklist only changed and we have cached results, reuse them
     if is_checklist_trigger and hasattr(update_graph, 'last_analysis_results') and hasattr(update_graph, 'last_data'):
@@ -257,21 +191,9 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
         df = update_graph.last_data
         if df is None or (hasattr(df, 'empty') and df.empty):
             fig_err = go.Figure(); fig_err.add_annotation(text='Cached data 없음', xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False); fig_err.update_layout(title='No data', height=800); return fig_err
-        # Create figure with dynamic rows based on selected indicators order
-        def create_dynamic_figure(selected_inds):
-            dyn = [i for i in (selected_inds or []) if i in ('RSI', 'MACD', 'ATR', 'OBV')]
-            num_dyn = len(dyn)
-            # base heights: price 0.6, volume 0.12, remaining 0.28 split
-            row_heights = [0.6, 0.12]
-            if num_dyn > 0:
-                per = 0.28 / num_dyn
-                row_heights.extend([per] * num_dyn)
-            # total rows
-            total_rows = 2 + num_dyn
-            fig_local = make_subplots(rows=total_rows, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=row_heights)
-            return fig_local, dyn
-
-        fig, dynamic_inds = create_dynamic_figure(selected_indicators)
+        # 캐시된 데이터로 기본 캔들 차트를 구성합니다. 이후 추가 그리기 코드가
+        # 초기화되지 않은 `fig` 변수를 참조하지 않고 트레이스/도형을 추가할 수 있게 합니다.
+        fig = go.Figure()
         try:
             # 각 캔들에 대한 hover 텍스트 준비 (포맷팅, 나노초 제외)
             hovertexts = [
@@ -292,29 +214,10 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     bordercolor='black',
                     font=dict(size=12, color='black')
                 )
-            ), row=1, col=1)
-            # Ensure Volume bar is added in cached-path as well
-            try:
-                vols = df['Volume'].fillna(0).tolist()
-                closes = df['Close'].tolist()
-                vol_colors = []
-                for i in range(len(vols)):
-                    if i == 0:
-                        vol_colors.append('lightgrey')
-                    else:
-                        vol_colors.append('green' if closes[i] >= closes[i-1] else 'red')
-                fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=vol_colors), row=2, col=1)
-            except Exception:
-                pass
+            ))
         except Exception:
             # 폴백: 빈 Figure 반환(실행 흐름은 일관되게 유지)
             fig = go.Figure()
-        finally:
-            # Ensure default interaction mode is panning for cached-path figure
-            try:
-                fig.update_layout(dragmode='pan')
-            except Exception:
-                pass
     else:
         # 신규 실행: 데이터 다운로드 및 분석 수행
         try:
@@ -333,19 +236,8 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
         if df is None or df.empty:
             fig_err = go.Figure(); fig_err.add_annotation(text='데이터 없음', xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False); fig_err.update_layout(title='No data', height=800); return fig_err
 
-        # 캔들스틱 + 서브플롯 생성 (dynamic rows)
-        def create_dynamic_figure(selected_inds):
-            dyn = [i for i in (selected_inds or []) if i in ('RSI', 'MACD', 'ATR')]
-            num_dyn = len(dyn)
-            row_heights = [0.6, 0.12]
-            if num_dyn > 0:
-                per = 0.28 / num_dyn
-                row_heights.extend([per] * num_dyn)
-            total_rows = 2 + num_dyn
-            fig_local = make_subplots(rows=total_rows, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=row_heights)
-            return fig_local, dyn
-
-        fig, dynamic_inds = create_dynamic_figure(selected_indicators)
+        # 캔들스틱 차트 생성
+        fig = go.Figure()
         try:
             # prepare hover text for each candle (formatted, no nanoseconds)
             hovertexts = [
@@ -366,22 +258,9 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     bordercolor='black',
                     font=dict(size=12, color='black')
                 )
-            ), row=1, col=1)
-
-            # Volume bar on row 2 (always show)
-            # color volume bars by whether close >= previous close
-            vols = df['Volume'].fillna(0).tolist()
-            closes = df['Close'].tolist()
-            vol_colors = []
-            for i in range(len(vols)):
-                if i == 0:
-                    vol_colors.append('lightgrey')
-                else:
-                    vol_colors.append('green' if closes[i] >= closes[i-1] else 'red')
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=vol_colors), row=2, col=1)
-        except Exception as e:
-            # fallback: if preparing hovertexts/volume fails, create empty figure to keep flow consistent
-            logger.warning(f"Failed preparing base traces (candles/volume): {e}")
+            ))
+        except Exception:
+            # fallback: empty figure but keep execution path consistent
             fig = go.Figure()
 
         # 분석 실행 및 결과 캐시
@@ -396,29 +275,6 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
             logger.error(f"분석 실패: {e}")
             fig.update_layout(title_text=f"{ticker} (DB) - Candles", xaxis_title='Date', yaxis_title='Price', height=800, xaxis_rangeslider_visible=False)
             return fig
-
-    # --- Indicator computation ---
-    from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.indicators import compute_indicators
-    # Deterministic: always compute indicators if any selected. Do not swallow exceptions.
-    spec = {}
-    # default spec could be extended; for now map simple selections
-    if 'SMA' in (selected_indicators or []):
-        spec.setdefault('sma', [20, 50])
-    if 'EMA' in (selected_indicators or []):
-        spec.setdefault('ema', [20])
-    if 'RSI' in (selected_indicators or []):
-        spec.setdefault('rsi', [14])
-    if 'MACD' in (selected_indicators or []):
-        spec.setdefault('macd', [{'fast':12,'slow':26,'signal':9}])
-    if 'BBANDS' in (selected_indicators or []):
-        spec.setdefault('bbands', [{'length':20,'std':2}])
-    if 'ATR' in (selected_indicators or []):
-        spec.setdefault('atr', [14])
-    if 'OBV' in (selected_indicators or []):
-        spec.setdefault('obv', True)
-
-    indicators_res = compute_indicators(df, spec=spec)
-    indicators_series = indicators_res.get('series', {})
 
     peaks_valleys = result.get("peaks_valleys", {})
     trend_info = result.get("trend_info", {})
@@ -500,30 +356,31 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
     # ZigZag 라인 - restore from trend_info (category 축에 맞게 좌표 변환)
     if 'show_zigzag' in selected_options:
-        # Consolidate zigzag segments into a single trace for clarity
         zigzag_points = trend_info.get('zigzag_points', [])
-        xs = []
-        ys = []
-        if zigzag_points:
-            for p in zigzag_points:
-                x_date = p.get('actual_date') or p.get('date') or p.get('detected_date')
-                y_val = p.get('value')
-                if x_date is None or y_val is None:
-                    continue
-                try:
-                    dt = pd.to_datetime(x_date)
-                    if dt not in df.index:
-                        idx = df.index.get_indexer([dt], method='nearest')[0]
-                        dt = df.index[idx]
-                    xs.append(dt)
-                    ys.append(y_val)
-                except Exception:
-                    continue
-        if len(xs) > 1:
-            try:
-                fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines', line=dict(color='grey', width=1), name='ZigZag', showlegend=False, hoverinfo='skip'))
-            except Exception:
-                pass
+        if len(zigzag_points) > 1:
+            for i in range(len(zigzag_points) - 1):
+                p1 = zigzag_points[i]
+                p2 = zigzag_points[i + 1]
+                x0_date = p1.get('actual_date')
+                x1_date = p2.get('actual_date')
+                y0 = p1.get('value')
+                y1 = p2.get('value')
+                if x0_date is not None and x1_date is not None and y0 is not None and y1 is not None:
+                    try:
+                        # datetime을 그대로 사용하여 모든 trace의 x를 일관되게 유지
+                        dt0 = pd.to_datetime(x0_date)
+                        dt1 = pd.to_datetime(x1_date)
+                        # 만약 df.index에 정확히 존재하지 않으면 nearest 방식으로 보정
+                        if dt0 not in df.index:
+                            idx0 = df.index.get_indexer([dt0], method='nearest')[0]
+                            dt0 = df.index[idx0]
+                        if dt1 not in df.index:
+                            idx1 = df.index.get_indexer([dt1], method='nearest')[0]
+                            dt1 = df.index[idx1]
+                        fig.add_trace(go.Scatter(x=[dt0, dt1], y=[y0, y1], mode='lines', line=dict(color='grey', width=1), showlegend=False, hoverinfo='skip'))
+                    except Exception:
+                        # 날짜 매칭 실패 시 건너뜀
+                        continue
 
     # JS Peaks & Valleys
     if 'show_js_extremums' in selected_options:
@@ -584,121 +441,6 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                 fig.add_trace(go.Scatter(x=svx, y=svy, mode='markers+text', marker=dict(symbol='circle', size=10, color='blue'), text=['sV']*len(svx), textposition='bottom center', textfont=dict(size=11, color='blue'), name='Sec Valleys'))
         except Exception as e:
             logger.warning(f"Secondary 표시 오류: {e}")
-
-    # Ensure Volume trace exists (some code paths may not have added it)
-    try:
-        vol_present = any((getattr(t, 'name', None) or '').lower() == 'volume' for t in fig.data)
-    except Exception:
-        vol_present = False
-    if not vol_present:
-        try:
-            vols = df['Volume'].fillna(0).tolist()
-            closes = df['Close'].tolist()
-            vol_colors = []
-            for i in range(len(vols)):
-                if i == 0:
-                    vol_colors.append('lightgrey')
-                else:
-                    vol_colors.append('green' if closes[i] >= closes[i-1] else 'red')
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=vol_colors), row=2, col=1)
-        except Exception:
-            pass
-
-    # --- Indicator traces rendering ---
-    try:
-        # overlay indicators (SMA/EMA) on price
-        for name, series in indicators_series.items():
-            if name.startswith('SMA') or name.startswith('EMA'):
-                try:
-                    # stronger, more visible colors/widths and place on top subplot
-                    if name.startswith('SMA_20'):
-                        clr = 'orange'; w = 2
-                    elif name.startswith('SMA_50'):
-                        clr = 'magenta'; w = 2
-                    elif name.startswith('EMA_'):
-                        clr = 'green'; w = 1.5
-                    else:
-                        clr = 'black'; w = 1
-                    fig.add_trace(go.Scatter(x=series.index, y=series.values, mode='lines', name=name, line=dict(color=clr, width=w)), row=1, col=1)
-                except Exception:
-                    continue
-
-        # Bollinger bands: add upper/lower/middle on top subplot
-        # keys in pandas-ta-classic usually like 'BBU_20_2.0', 'BBM_20_2.0', 'BBL_20_2.0'
-        # Support different possible BB column name formats
-        bb_upper_keys = [k for k in indicators_series.keys() if k.startswith('BBU_')]
-        bb_mid_keys = [k for k in indicators_series.keys() if k.startswith('BBM_')]
-        bb_lower_keys = [k for k in indicators_series.keys() if k.startswith('BBL_')]
-        if bb_upper_keys and bb_mid_keys and bb_lower_keys:
-            try:
-                up = indicators_series[bb_upper_keys[0]]
-                mid = indicators_series[bb_mid_keys[0]]
-                low = indicators_series[bb_lower_keys[0]]
-                # draw upper and mid lines, then fill between mid and lower for better visibility
-                fig.add_trace(go.Scatter(x=up.index, y=up.values, mode='lines', name='BB Upper', line=dict(color='purple', width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=mid.index, y=mid.values, mode='lines', name='BB Mid', line=dict(color='lightgrey', width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=low.index, y=low.values, mode='lines', name='BB Lower', line=dict(color='purple', width=1), fill='tonexty', fillcolor='rgba(180,150,220,0.18)'), row=1, col=1)
-            except Exception:
-                pass
-
-        # MACD / RSI / ATR / OBV -> dynamic rows based on dynamic_inds order
-        macd_m = None
-        macdh_m = None
-        macds_m = None
-        rsi_s = None
-        atr_s = None
-        obv_s = None
-        for k, s in indicators_series.items():
-            if k.startswith('MACD') and not k.startswith('MACDh') and not k.startswith('MACDs'):
-                macd_m = s
-            if k.startswith('MACDh'):
-                macdh_m = s
-            if k.startswith('MACDs'):
-                macds_m = s
-            if k.startswith('RSI'):
-                rsi_s = s
-            if k.startswith('ATR'):
-                atr_s = s
-            if k == 'OBV':
-                obv_s = s
-
-        # helper to map dynamic index to subplot row
-        def dyn_row_for(idx):
-            # row 1 = price, row 2 = volume, dynamic rows start at 3
-            return 3 + idx
-
-        try:
-            for idx, ind in enumerate(dynamic_inds):
-                row_idx = dyn_row_for(idx)
-                if ind == 'MACD':
-                    if macd_m is not None:
-                        fig.add_trace(go.Scatter(x=macd_m.index, y=macd_m.values, mode='lines', name='MACD', line=dict(color='blue', width=1.5)), row=row_idx, col=1)
-                    if macds_m is not None:
-                        fig.add_trace(go.Scatter(x=macds_m.index, y=macds_m.values, mode='lines', name='Signal', line=dict(color='red', width=1)), row=row_idx, col=1)
-                    if macdh_m is not None:
-                        fig.add_trace(go.Bar(x=macdh_m.index, y=macdh_m.values, name='MACD Hist', marker_color='rgb(0,128,255)'), row=row_idx, col=1)
-                elif ind == 'RSI':
-                    if rsi_s is not None:
-                        fig.add_trace(go.Scatter(x=rsi_s.index, y=rsi_s.values, mode='lines', name='RSI', line=dict(color='purple', width=1)), row=row_idx, col=1)
-                        # add 30/70 bands
-                        fig.add_trace(go.Scatter(x=[rsi_s.index[0], rsi_s.index[-1]], y=[70,70], mode='lines', line=dict(color='grey', width=1, dash='dash'), showlegend=False), row=row_idx, col=1)
-                        fig.add_trace(go.Scatter(x=[rsi_s.index[0], rsi_s.index[-1]], y=[30,30], mode='lines', line=dict(color='grey', width=1, dash='dash'), showlegend=False), row=row_idx, col=1)
-                elif ind == 'ATR':
-                    if atr_s is not None:
-                        fig.add_trace(go.Scatter(x=atr_s.index, y=atr_s.values, mode='lines', name='ATR', line=dict(color='brown', width=1)), row=row_idx, col=1)
-                elif ind == 'OBV':
-                    # place OBV in same row as Volume (row 2) OR in its own dynamic row depending on dynamic index
-                    if obv_s is not None:
-                        # if the dynamic row corresponds to volume slot (rare), ensure we map to row 2
-                        if row_idx <= 2:
-                            target_row = 2
-                        else:
-                            target_row = row_idx
-                        fig.add_trace(go.Scatter(x=obv_s.index, y=obv_s.values, mode='lines', name='OBV', line=dict(color='navy', width=1.5)), row=target_row, col=1)
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning(f"Indicator rendering failed: {e}")
 
     # Patterns: DT / DB (boxes) and HS / IHS markers + necklines
     if 'show_dt_db' in selected_options:
@@ -936,17 +678,12 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
     fig.update_layout(
         title_text=f"{ticker} (DB) - Candles",
         xaxis_title='Date',
-        height=900,
+        yaxis_title='Price',
+        height=800,
         xaxis_rangeslider_visible=False,
         shapes=shapes_to_draw,
-        showlegend=True,
-        dragmode='pan'
+        yaxis_range=[plot_y_min, plot_y_max]
     )
-    # set y-axis range only for first subplot
-    try:
-        fig.update_yaxes(range=[plot_y_min, plot_y_max], row=1, col=1)
-    except Exception:
-        pass
 
     # 커스텀 ticks 생성 (여기 추가)
     import pandas as pd  # 이미 import 되어 있음

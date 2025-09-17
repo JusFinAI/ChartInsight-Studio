@@ -9,14 +9,17 @@ from typing import List, Dict, Any,Optional, Tuple # 타입 힌팅 추가
 import os
 from datetime import datetime
 
-# Avoid import-time side effects for logging. Application entrypoint should
-# call configure_logger(...) if file handlers are required.
+# 모듈 전용 로거 구성: 파일/콘솔 핸들러는 호출 시 configure_logger를 통해 추가합니다.
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config import configure_logger
 
 # 모듈 폴더 아래 logs 디렉토리를 기본으로 사용하도록 지정
+
 from pathlib import Path
 MODULE_LOGS_DIR = Path(__file__).resolve().parent / "logs"
-logger = configure_logger(__name__, log_file_prefix="chart_pattern_analyzer_v3", logs_dir=MODULE_LOGS_DIR, level=logging.INFO)
+# 안전화: 모듈 임포트 시 파일 핸들러 생성을 피하기 위해
+# 엔트리포인트에서 명시적으로 configure_logger를 호출할 때만
+# 파일 핸들러가 추가되도록 모듈에서는 로거 객체만 가져옵니다.
+logger = logging.getLogger(__name__)
     
 @dataclass
 class MarketTrendInfo:

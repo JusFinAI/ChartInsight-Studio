@@ -8,3 +8,4 @@ PyYAML
 requests 
 SQLAlchemy
 psycopg2-binary
+git+https://github.com/xgboosted/pandas-ta-classic
