@@ -14,7 +14,7 @@ from datetime import datetime
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config import configure_logger
 
 # Band tolerance for dynamic band sizing (e.g. 0.05 = 5%)
-BAND_TOLERANCE = 0.05
+BAND_TOLERANCE = 0.2
 
 # 모듈 폴더 아래 logs 디렉토리를 기본으로 사용하도록 지정
 from pathlib import Path
@@ -1141,7 +1141,28 @@ class InverseHeadAndShouldersDetector(PatternDetector):
                     self.log_event("경고: 넥라인 완성 조건 확인 위한 P2 또는 P3 정보 부족.", "WARNING")                
 # --- DoubleBottomDetector 전체 코드 (수정된 __init__ 포함) ---
 class DoubleBottomDetector(PatternDetector):
-    """Double Bottom 패턴 감지기"""
+    
+    """
+    Double Bottom (DB) 패턴의 형성 과정을 실시간으로 탐지하고 관리합니다.
+
+    `first_extremum`(첫 번째 저점)이 확인된 후 활성화됩니다.
+    이후 `pullback_high`(반등 고점)가 형성되고, 가격이 다시 하락하여
+    `first_extremum`과 유사한 수준으로 재진입(`Reentry`)하는 과정을 추적합니다.
+
+    재진입의 유효성은 'Pullback 깊이'와 `tolerance`를 이용해 계산된 동적
+    지지 밴드(`band`)를 기준으로 판단하며, 밴드 터치 후 재반등이 확인되는
+    `reentry_confirmation` 단계를 거쳐 패턴의 다음 단계로 진행합니다.
+
+    Attributes:
+        first_extremum (dict): 패턴 탐지를 시작하게 한 첫 번째 저점(Valley)의 정보.
+        pullback_high (float): `first_extremum` 이후 형성된 반등 고점(Peak)의 가격.
+        second_valley (float): 지지 밴드(`band`)에 닿았을 때 기록되는 두 번째 저점 후보의 가격.
+        band (dict): 두 번째 저점 후보를 찾기 위한 동적 지지 밴드. {'low', 'high'} 형태이며,
+                      Pullback 깊이에 따라 너비가 동적으로 결정됩니다.
+        straight_peak (float): 두 저점 사이의 고점(넥라인) 가격. 이 가격을 돌파하면
+                               패턴이 무효화될 수 있습니다.
+    """
+        
     def __init__(self, valley, data, peaks=None, valleys=None): # band_option 파라미터 제거
         super().__init__(valley, data, peaks, valleys) # 기본 생성자 호출
         self.pattern_type = "DB"
@@ -1374,7 +1395,26 @@ class DoubleBottomDetector(PatternDetector):
 
 # --- DoubleTopDetector 전체 코드 (수정된 __init__ 포함) ---
 class DoubleTopDetector(PatternDetector):
-    """Double Top 패턴 감지기"""
+    """
+    Double Top (DT) 패턴의 형성 과정을 실시간으로 탐지하고 관리합니다.
+
+    `first_extremum`(첫 번째 고점)이 확인된 후 활성화됩니다.
+    이후 `pullback_low`(되돌림 저점)가 형성되고, 가격이 다시 상승하여
+    `first_extremum`과 유사한 수준으로 재진입(`Reentry`)하는 과정을 추적합니다.
+
+    재진입의 유효성은 'Pullback 깊이'와 `tolerance`를 이용해 계산된 동적
+    저항 밴드(`band`)를 기준으로 판단하며, 밴드 터치 후 재하락이 확인되는
+    `reentry_confirmation` 단계를 거쳐 패턴의 다음 단계로 진행합니다.
+
+    Attributes:
+        first_extremum (dict): 패턴 탐지를 시작하게 한 첫 번째 고점(Peak)의 정보.
+        pullback_low (float): `first_extremum` 이후 형성된 되돌림 저점(Valley)의 가격.
+        second_peak (float): 저항 밴드(`band`)에 닿았을 때 기록되는 두 번째 고점 후보의 가격.
+        band (dict): 두 번째 고점 후보를 찾기 위한 동적 저항 밴드. {'low', 'high'} 형태이며,
+                      Pullback 깊이에 따라 너비가 동적으로 결정됩니다.
+        straight_valley (float): 두 고점 사이의 저점(넥라인) 가격. 이 가격이 붕괴되면
+                                 패턴이 무효화될 수 있습니다.
+    """
     def __init__(self, peak, data, peaks=None, valleys=None): # band_option 파라미터 제거
         super().__init__(peak, data, peaks, valleys) # 기본 생성자 호출
         self.pattern_type = "DT"

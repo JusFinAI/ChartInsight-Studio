@@ -108,16 +108,16 @@ configure_logger(
 )
 
 # 알고리즘(엔진) 상세 로그 파일 생성: DEBUG 레벨
-# run_full_analysis의 자세한 디버깅/분석 로그를 별도 파일로 분리합니다.
+# run_full_analysis_impl의 자세한 디버깅/분석 로그를 별도 파일로 분리합니다.
 configure_logger(
-    logger_name="backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis",
+    logger_name="backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis_impl",
     log_file_prefix="algorithm_run",
     logs_dir=MODULE_LOG_DIR,
     level=logging.DEBUG,
 )
 
 # 분석 엔진의 기본 로깅 레벨(콘솔)는 위에서 파일 핸들러를 등록했으므로 추가로 조정
-logging.getLogger('backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis').setLevel(logging.INFO)
+logging.getLogger('backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis_impl').setLevel(logging.INFO)
 
 # backend 모듈들의 불필요한 로그 파일 생성 방지
 logging.getLogger('chartinsight-api.data_loader').disabled = True
