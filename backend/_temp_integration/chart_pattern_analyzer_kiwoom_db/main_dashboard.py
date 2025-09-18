@@ -1001,13 +1001,13 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
 if __name__ == '__main__':
     logger.info('=== DB-backed Dash 앱 시작 ===')
-    logger.info('UI 준비 완료: http://localhost:8054')
-    print('🌐 브라우저에서 http://localhost:8054 으로 접속하세요!')
+    logger.info('UI 준비 완료: http://localhost:8058')
+    print('🌐 브라우저에서 http://localhost:8058 으로 접속하세요!')
     # Start standalone app
     try:
         # app is defined earlier in this file (standalone implementation)
-        app.run(debug=True, host='127.0.0.1', port=8054, use_reloader=False)
+        app.run(debug=True, host='127.0.0.1', port=8058, use_reloader=False)
     except TypeError:
-        app.run(debug=True, host='127.0.0.1', port=8054)
+        app.run(debug=True, host='127.0.0.1', port=8058)
 
 

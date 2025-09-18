@@ -13,9 +13,6 @@ from datetime import datetime
 # call configure_logger(...) if file handlers are required.
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config import configure_logger
 
-# Band tolerance for dynamic band sizing (e.g. 0.05 = 5%)
-BAND_TOLERANCE = 0.05
-
 # 모듈 폴더 아래 logs 디렉토리를 기본으로 사용하도록 지정
 from pathlib import Path
 MODULE_LOGS_DIR = Path(__file__).resolve().parent / "logs"
@@ -1160,18 +1157,6 @@ class DoubleBottomDetector(PatternDetector):
             # 확인 캔들 정보 조회
             self.confirmation_candle = data.loc[self.first_extremum['detected_date']].to_dict()
             self.confirmation_candle['date'] = self.first_extremum['detected_date']
-            # pullback_high: actual -> confirmation 구간의 High max
-            try:
-                actual_idx = data.index.get_loc(self.first_extremum['actual_date'])
-                detected_idx = data.index.get_loc(self.first_extremum['detected_date'])
-                if actual_idx <= detected_idx:
-                    pullback_window = data.iloc[actual_idx: detected_idx + 1]
-                else:
-                    pullback_window = data.iloc[detected_idx: actual_idx + 1]
-                self.pullback_high = float(pullback_window['High'].max())
-            except Exception:
-                # fallback: confirmation high
-                self.pullback_high = float(self.confirmation_candle.get('High', self.first_extremum.get('high')))
             # 실제 캔들 정보 조회 (extremum 객체에서 직접 사용)
             self.actual_candle = {
                 'date': self.first_extremum['actual_date'],
@@ -1195,27 +1180,12 @@ class DoubleBottomDetector(PatternDetector):
         # --- DB 속성 초기화 ---
         # actual_candle이 양봉인지 음봉인지 확인
         is_actual_positive = self.actual_candle['Close'] > self.actual_candle['Open']
-
-        # Dynamic band 초기값 계산: band.high = actual_valley_price + pullback_depth * tolerance
-        actual_valley_price = float(self.actual_candle.get('Low', self.actual_candle.get('Close')))
-        pullback_high = getattr(self, 'pullback_high', None)
-        if pullback_high is None:
-            pullback_high = float(self.confirmation_candle.get('High', self.actual_candle.get('High')))
-        pullback_depth = max(0.0, float(pullback_high) - actual_valley_price)
-        tolerance = globals().get('BAND_TOLERANCE', 0.05)
-        calculated_band_high = actual_valley_price + pullback_depth * float(tolerance)
-
-        # 안전캡: band_high은 실제 캔들의 High 또는 확인캔들 High보다 크지 않도록 제한(선택적)
-        cap_high = max(float(self.actual_candle.get('High', calculated_band_high)), float(self.confirmation_candle.get('High', calculated_band_high)))
-        calculated_band_high = min(calculated_band_high, cap_high)
-
+        
+        # 밴드 계산 - band.high를 actual_candle의 '몸통 위'로 변경
         self.band = {
-            'low': actual_valley_price,
-            'high': calculated_band_high
+            'low': self.actual_candle['Low'],
+            'high': self.actual_candle['Close'] if is_actual_positive else self.actual_candle['Open']
         }
-        # 저장된 pullback 정보
-        self.pullback_high = float(pullback_high)
-        self.pullback_depth = float(pullback_depth)
         self.positive_candles = []
         self.second_valley = None
         self.straight_peak = self._get_straight_peak() # Straight Peak 계산
@@ -1275,9 +1245,7 @@ class DoubleBottomDetector(PatternDetector):
         if self.stage == "Pullback":
             # 밴드 존재 여부 확인 추가
             if (self.band and candle['Close'] < self.band['low']) or candle['Close'] > self.straight_peak:
-                band_low_val = self.band.get('low') if self.band else None
-                band_low_str = f"{band_low_val:.2f}" if isinstance(band_low_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) < Band Low({band_low_str})" if (self.band and band_low_val is not None and candle['Close'] < band_low_val) else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
+                reason = f"Close({candle['Close']:.2f}) < Band Low({self.band.get('low', 'N/A'):.2f})" if self.band and candle['Close'] < self.band['low'] else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
                 self.reset(reason); return
             # first_positive_candle 존재 여부 확인 추가
             if candle['Close'] > candle['Open'] and self.first_positive_candle and candle['Close'] > self.first_positive_candle['Close']:
@@ -1285,88 +1253,21 @@ class DoubleBottomDetector(PatternDetector):
 
         elif self.stage == "Reentry":
             if (self.band and candle['Close'] < self.band['low']) or candle['Close'] > self.straight_peak:
-                band_low_val = self.band.get('low') if self.band else None
-                band_low_str = f"{band_low_val:.2f}" if isinstance(band_low_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) < Band Low({band_low_str})" if (self.band and band_low_val is not None and candle['Close'] < band_low_val) else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
+                reason = f"Close({candle['Close']:.2f}) < Band Low({self.band.get('low', 'N/A'):.2f})" if self.band and candle['Close'] < self.band['low'] else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
                 self.reset(reason); return
-            # Dynamic expansion: observed pullback_high up to current candle may be larger than init pullback_high
-            try:
-                actual_idx = self.data.index.get_loc(self.first_extremum['actual_date'])
-                cur_idx = self.data.index.get_loc(candle['date'])
-                if cur_idx >= actual_idx:
-                    observed_high = float(self.data['High'].iloc[actual_idx:cur_idx+1].max())
-                else:
-                    observed_high = getattr(self, 'pullback_high', float(self.confirmation_candle.get('High', self.actual_candle.get('High'))))
-            except Exception:
-                observed_high = getattr(self, 'pullback_high', float(self.confirmation_candle.get('High', self.actual_candle.get('High'))))
-
-            effective_pullback_high = max(getattr(self, 'pullback_high', observed_high), observed_high)
-            pullback_depth_effective = max(0.0, float(effective_pullback_high) - float(self.band['low']))
-            tolerance = globals().get('BAND_TOLERANCE', 0.05)
-            new_band_high = float(self.band['low']) + pullback_depth_effective * float(tolerance)
-            
-            cap_high = max(float(self.actual_candle.get('High', new_band_high)), float(self.confirmation_candle.get('High', new_band_high)))
-            new_band_high = min(new_band_high, cap_high)
-            # expand band high if larger
-            if new_band_high > (self.band.get('high') if self.band else 0):
-                self.band['high'] = new_band_high
-                self.observed_pullback_high = observed_high
-            
-            body_low = min(candle['Open'], candle['Close'])
-            body_touch = body_low <= self.band['high']
-            wick_touch = (candle['Low'] <= self.band['high']) and not body_touch
-                       
-            
-            prev_candle = self.candle_history[-2] if len(self.candle_history) >= 2 else None
-            prev_close = prev_candle.get('Close') if prev_candle else None
-            is_down_close = (prev_close is not None and candle['Close'] < prev_close)
-            
-            is_doji = (candle['Close'] == candle['Open'])
-            is_bearish_or_doji = (candle['Close'] < candle['Open']) or is_doji
-            
-            
-            if body_touch:
+            if self.band and candle['Low'] <= self.band['high']: # band None 체크
                 self.second_valley = candle['Low']
-                self.stage = "reentry_confirmation"
-                self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Valley Cand: {self.second_valley:.0f})", "DEBUG", candle['date'])
+                self.stage = "reentry_confirmation"; self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Valley Cand: {self.second_valley:.0f})", "DEBUG", candle['date'])
                 if self.second_valley < self.band['low']:
                     self.log_event(f"Band Low 업데이트: {self.band['low']:.0f} -> {self.second_valley:.0f}", "DEBUG", candle['date']); self.band['low'] = self.second_valley
-            
-            elif wick_touch:
-                
-                self.second_valley = candle['Low']
-                self.stage = "reentry_confirmation"
-                self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Valley Cand: {self.second_valley:.0f})", "DEBUG", candle['date'])
-                if self.second_valley < self.band['low']:
-                    self.log_event(f"Band Low 업데이트: {self.band['low']:.0f} -> {self.second_valley:.0f}", "DEBUG", candle['date']); self.band['low'] = self.second_valley
-            else:
-                self.log_event(f"Reentry 후보 무시: band_touch but not valid retrace (is_down_close={is_down_close}, is_bearish_or_doji={is_bearish_or_doji})", "DEBUG", candle['date'])
-                
-                    
 
         elif self.stage == "reentry_confirmation":
             if (self.band and candle['Close'] < self.band['low']) or candle['Close'] > self.straight_peak:
-                band_low_val = self.band.get('low') if self.band else None
-                band_low_str = f"{band_low_val:.2f}" if isinstance(band_low_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) < Band Low({band_low_str})" if (band_low_val is not None and candle['Close'] < band_low_val) else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
-                self.reset(reason); return
-            if (self.band and candle['Close'] < self.band['low']) or candle['Close'] > self.straight_peak:
-                band_low_val = self.band.get('low') if self.band else None
-                band_low_str = f"{band_low_val:.2f}" if isinstance(band_low_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) < Band Low({band_low_str})" if (band_low_val is not None and candle['Close'] < band_low_val) else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
+                reason = f"Close({candle['Close']:.2f}) < Band Low({self.band.get('low', 'N/A'):.2f})" if self.band and candle['Close'] < self.band['low'] else f"Close({candle['Close']:.2f}) > Straight Peak({self.straight_peak:.2f})"
                 self.reset(reason); return
                 
-            # 문서 기준 완료 판정: 직전 캔들 타입에 따라 분기 검증
-            prev_candle = self.candle_history[-2] if len(self.candle_history) >= 2 else None
-            if prev_candle is None:
-                doc_ok = (candle['Close'] > candle['Open'])
-            else:
-                if prev_candle['Close'] > prev_candle['Open']:
-                    doc_ok = (candle['Close'] > prev_candle['Close'])
-                else:
-                    doc_ok = (candle['Close'] > prev_candle['Open'])
-
-            if doc_ok:
+            # 완성 조건 수정: 양봉이고 윗꼬리 길이가 전체 캔들 길이의 20% 미만인 경우
+            if candle['Close'] > candle['Open']:  # 양봉 확인
                 self.stage = "Completed"
                 self.expectation_mode = False
                 self.log_event(f"*** Double Bottom 패턴 완성! *** Price={candle['Close']:.0f}", "INFO", candle['date'])
@@ -1414,33 +1315,11 @@ class DoubleTopDetector(PatternDetector):
         # actual_candle이 음봉인지 양봉인지 확인
         is_actual_negative = self.actual_candle['Close'] < self.actual_candle['Open']
         
-        # Dynamic band 계산: band.low = actual_peak_price - pullback_depth * tolerance
-        actual_peak_price = float(self.actual_candle.get('High', self.actual_candle.get('Close')))
-        try:
-            actual_idx = data.index.get_loc(self.first_extremum['actual_date'])
-            detected_idx = data.index.get_loc(self.first_extremum['detected_date'])
-            if actual_idx <= detected_idx:
-                pullback_window = data.iloc[actual_idx: detected_idx + 1]
-            else:
-                pullback_window = data.iloc[detected_idx: actual_idx + 1]
-            self.pullback_low = float(pullback_window['Low'].min())
-        except Exception:
-            self.pullback_low = float(self.confirmation_candle.get('Low', self.actual_candle.get('Low')))
-
-        pullback_depth = max(0.0, actual_peak_price - float(self.pullback_low))
-        tolerance = globals().get('BAND_TOLERANCE', 0.05)
-        calculated_band_low = actual_peak_price - pullback_depth * float(tolerance)
-        # 안전캡: band_low는 actual/confirmation의 Low보다 낮아지지 않도록 제한
-        cap_low = min(float(self.actual_candle.get('Low', calculated_band_low)), float(self.confirmation_candle.get('Low', calculated_band_low)))
-        calculated_band_low = max(calculated_band_low, cap_low)
-
+        # 밴드 계산 - band.low를 actual_candle의 '몸통 밑'으로 변경
         self.band = {
-            'high': actual_peak_price,
-            'low': calculated_band_low
+            'high': self.actual_candle['High'],
+            'low': self.actual_candle['Close'] if is_actual_negative else self.actual_candle['Open']
         }
-        # 저장 정보
-        self.pullback_high = actual_peak_price
-        self.pullback_depth = float(pullback_depth)
         self.negative_candles = []
         self.second_peak = None
         self.straight_valley = self._get_straight_valley() # Straight Valley 계산
@@ -1490,9 +1369,7 @@ class DoubleTopDetector(PatternDetector):
 
         if self.stage == "Pullback":
             if (self.band and candle['Close'] > self.band['high']) or candle['Close'] < self.straight_valley:
-                band_high_val = self.band.get('high') if self.band else None
-                band_high_str = f"{band_high_val:.2f}" if isinstance(band_high_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) > Band High({band_high_str})" if (self.band and band_high_val is not None and candle['Close'] > band_high_val) else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
+                reason = f"Close({candle['Close']:.2f}) > Band High({self.band.get('high', 'N/A'):.2f})" if self.band and candle['Close'] > self.band['high'] else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
                 self.reset(reason); return
             if candle['Close'] < candle['Open']:
                 # first_negative_candle 존재 여부 확인 추가
@@ -1501,94 +1378,21 @@ class DoubleTopDetector(PatternDetector):
 
         elif self.stage == "Reentry":
             if (self.band and candle['Close'] > self.band['high']) or candle['Close'] < self.straight_valley:
-                band_high_val = self.band.get('high') if self.band else None
-                band_high_str = f"{band_high_val:.2f}" if isinstance(band_high_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) > Band High({band_high_str})" if (self.band and band_high_val is not None and candle['Close'] > band_high_val) else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
+                reason = f"Close({candle['Close']:.2f}) > Band High({self.band.get('high', 'N/A'):.2f})" if self.band and candle['Close'] > self.band['high'] else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
                 self.reset(reason); return
-            
-            try:
-                actual_idx = self.data.index.get_loc(self.first_extremum['actual_date'])
-                cur_idx = self.data.index.get_loc(candle['date'])
-                if cur_idx >= actual_idx:
-                    observed_low = float(self.data['Low'].iloc[actual_idx:cur_idx+1].min())
-                else:
-                    observed_low = getattr(self, 'pullback_low', float(self.confirmation_candle.get('Low', self.actual_candle.get('Low'))))
-            except Exception:
-                observed_low = getattr(self, 'pullback_low', float(self.confirmation_candle.get('Low', self.actual_candle.get('Low'))))
-
-            # effective pullback low is the deeper (smaller) of initial and observed
-            effective_pullback_low = min(getattr(self, 'pullback_low', observed_low), observed_low)
-            # pullback depth relative to the peak
-            pullback_depth_effective = max(0.0, float(self.pullback_high) - float(effective_pullback_low))
-            tolerance = globals().get('BAND_TOLERANCE', 0.05)
-            new_band_low = float(self.pullback_high) - pullback_depth_effective * float(tolerance)
-
-            # safety cap: do not move band_low above the actual/confirmation low (avoid excessive lowering)
-            cap_low = min(float(self.actual_candle.get('Low', new_band_low)), float(self.confirmation_candle.get('Low', new_band_low)))
-            new_band_low = max(new_band_low, cap_low)     
-            
-            band_low_val_current = self.band.get('low') if self.band else None
-            if band_low_val_current is None:
-                compare_low = float('inf')
-            else:
-                compare_low = band_low_val_current
-            if new_band_low < compare_low:
-                self.band['low'] = new_band_low
-                self.observed_pullback_low = observed_low
-            
-            # Reentry touch logic: body-touch preferred; wick-touch requires additional confirmation
-            # body_high = max(Open, Close)
-            body_high = max(candle['Open'], candle['Close'])
-            body_touch = body_high >= self.band['low']
-            wick_touch = (candle['High'] >= self.band['low']) and not body_touch
-
-            # previous candle for retrace/rally confirmation
-            prev_candle = self.candle_history[-2] if len(self.candle_history) >= 2 else None
-            prev_close = prev_candle.get('Close') if prev_candle else None
-            is_up_close = (prev_close is not None and candle['Close'] > prev_close)
-            is_doji = (candle['Close'] == candle['Open'])
-            is_bullish_or_doji = (candle['Close'] > candle['Open']) or is_doji
-            
-            if body_touch:
-                # immediate acceptance if the body itself touches or exceeds the band_low
+            if self.band and candle['High'] >= self.band['low']: # band None 체크
                 self.second_peak = candle['High']
-                self.stage = "reentry_confirmation"
-                self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Peak Cand: {self.second_peak:.0f})", "DEBUG", candle['date'])
+                self.stage = "reentry_confirmation"; self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Peak Cand: {self.second_peak:.0f})", "DEBUG", candle['date'])
                 if self.second_peak > self.band['high']:
                     self.log_event(f"Band High 업데이트: {self.band['high']:.0f} -> {self.second_peak:.0f}", "DEBUG", candle['date']); self.band['high'] = self.second_peak
-            elif wick_touch:
-                # require rally confirmation for wick-only touches: previous-close must be lower and current is bullish/doji
-                if is_up_close and is_bullish_or_doji:
-                    self.second_peak = candle['High']
-                    self.stage = "reentry_confirmation"
-                    self.log_event(f"Stage Reentry -> reentry_confirmation (Sec Peak Cand: {self.second_peak:.0f})", "DEBUG", candle['date'])
-                    if self.second_peak > self.band['high']:
-                        self.log_event(f"Band High 업데이트: {self.band['high']:.0f} -> {self.second_peak:.0f}", "DEBUG", candle['date']); self.band['high'] = self.second_peak
-                else:
-                    self.log_event(f"Reentry 후보 무시: band_touch but not valid rally (is_up_close={is_up_close}, is_bullish_or_doji={is_bullish_or_doji})", "DEBUG", candle['date'])
-            else:
-                # no touch
-                pass
-                    
 
         elif self.stage == "reentry_confirmation":
             if (self.band and candle['Close'] > self.band['high']) or candle['Close'] < self.straight_valley:
-                band_high_val = self.band.get('high') if self.band else None
-                band_high_str = f"{band_high_val:.2f}" if isinstance(band_high_val, (int, float)) else "N/A"
-                reason = f"Close({candle['Close']:.2f}) > Band High({band_high_str})" if (band_high_val is not None and candle['Close'] > band_high_val) else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
+                reason = f"Close({candle['Close']:.2f}) > Band High({self.band.get('high', 'N/A'):.2f})" if self.band and candle['Close'] > self.band['high'] else f"Close({candle['Close']:.2f}) < Straight Valley({self.straight_valley:.2f})"
                 self.reset(reason); return
                 
-            # 문서 기준 완료 판정(대칭 규칙): 직전 캔들 타입에 따라 분기 검증
-            prev_candle = self.candle_history[-2] if len(self.candle_history) >= 2 else None
-            if prev_candle is None:
-                doc_ok = (candle['Close'] < candle['Open'])
-            else:
-                if prev_candle['Close'] < prev_candle['Open']:
-                    doc_ok = (candle['Close'] < prev_candle['Close'])
-                else:
-                    doc_ok = (candle['Close'] < prev_candle['Open'])
-
-            if doc_ok:
+            # 완성 조건 수정: 음봉이고 아래꼬리 길이가 전체 캔들 길이의 20% 미만인 경우
+            if candle['Close'] < candle['Open']:  # 음봉 확인
                 self.stage = "Completed"
                 self.expectation_mode = False
                 self.log_event(f"*** Double Top 패턴 완성! *** Price={candle['Close']:.0f}", "INFO", candle['date'])
