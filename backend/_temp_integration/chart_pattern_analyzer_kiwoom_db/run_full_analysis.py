@@ -104,7 +104,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
             logger.error(f"데이터 인덱싱 오류: index={i}")
             continue
         
-        if current_date.date() == pd.Timestamp('2024-12-04').date():
+        if current_date.date() == pd.Timestamp('2025-03-21').date():
             logger.debug(f"디버그 날짜: {current_date.strftime('%Y-%m-%d')}")
 
 

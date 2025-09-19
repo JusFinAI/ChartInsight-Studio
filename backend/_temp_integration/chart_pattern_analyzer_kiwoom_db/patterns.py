@@ -23,8 +23,7 @@ class PatternDetector:
         self.P1 = None; self.V2 = None; self.P2 = None; self.V3 = None; self.P3 = None
         self.V1 = None; self.P2_ihs = None; self.V2_ihs = None; self.P3_ihs = None; self.V3_ihs = None
         self.neckline_level = None
-        self.p1_close_level_reached = False
-        self.v1_close_level_reached = False
+        
         # DT / DB
         self.confirmation_candle = None; self.actual_candle = None; self.band = None
         self.straight_peak = None; self.straight_valley = None
@@ -93,14 +92,21 @@ class HeadAndShouldersDetector(PatternDetector):
         current_high = candle['High']
         current_low = candle['Low']
 
-        # --- 리셋 조건 확인 (스테이지 이름 조정) ---
-        if self.P1 and current_high > self.P1['value'] and self.stage == "LeftShoulderPeakDetected": # Stage 1 Reset
-            self.log_event(f"리셋 (Stage 1): 현재 High({current_high:.0f}) > P1({self.P1['value']:.0f})", "INFO"); self.reset("P1 고점 상회"); return
-        if self.V2 and current_close < self.V2['value'] and self.stage == "LeftNecklineValleyDetected": # Stage 2 Reset
-            self.log_event(f"리셋 (Stage 2): 현재 Close({current_close:.0f}) < V2({self.V2['value']:.0f})", "INFO"); self.reset("V2 저점 하회"); return
+        # Stage 1 리셋: V2 감지 전 P1 고점 상회 (`현재 High > P1['value']`).
+        if self.P1 and current_high > self.P1['value'] and self.stage == "LeftShoulderPeakDetected": 
+            self.log_event(f"리셋 (Stage 1): 현재 High({current_high:.0f}) > P1({self.P1['value']:.0f})", "INFO"); 
+            self.reset("P1 고점 상회"); 
+            return
+        #Stage 2 리셋: P2 감지 전 V2 저점 하회 (`현재 Close < V2['value']`).
+        if self.V2 and current_close < self.V2['value'] and self.stage == "LeftNecklineValleyDetected": 
+            self.log_event(f"리셋 (Stage 2): 현재 Close({current_close:.0f}) < V2({self.V2['value']:.0f})", "INFO"); 
+            self.reset("V2 저점 하회"); 
+            return
         # P2(머리) 고점 돌파 리셋: P2 형성 후 ~ 완성 전까지 모든 단계에서 확인
         if self.P2 and current_high > self.P2['value'] and self.stage in ["HeadPeakDetected", "RightNecklineValleyDetected", "AwaitingCompletion"]:
-            self.log_event(f"리셋 (Stage {self.stage}): 현재 High({current_high:.0f}) > P2({self.P2['value']:.0f})", "INFO"); self.reset("머리 고점 상회"); return
+            self.log_event(f"리셋 (Stage {self.stage}): 현재 High({current_high:.0f}) > P2({self.P2['value']:.0f})", "INFO"); 
+            self.reset("머리 고점 상회"); 
+            return
         # V2(왼쪽 넥라인) 저점 돌파 리셋: V3/P3 형성 중 또는 완성 대기 중
         if self.V2 and current_close < self.V2['value'] and self.stage in ["RightNecklineValleyDetected", "AwaitingCompletion"]:
             self.log_event(f"리셋 (Stage {self.stage}): 현재 Close({current_close:.0f}) < V2({self.V2['value']:.0f})", "INFO"); self.reset("V3/P3 형성 또는 완성 대기 중 V2 하회"); return
@@ -964,20 +970,33 @@ class PatternManager:
         return max(candidates, key=lambda x: x['index']) if candidates else None
     
     def _find_hs_ihs_structural_points(self, all_extremums: List[Dict], lookback_limit: int = 15) -> Optional[Dict[str, Dict]]:
-        """
-        (헬퍼 함수) 시간순 정렬된 전체 극점 리스트에서 H&S 또는 IH&S의
-        구조적 극점(P1,V2,P2,V3 또는 V1,P2,V2,P3) 후보를 식별합니다.
-        연속된 동일 타입 극점 중 가장 유의미한 값(최고 P, 최저 V)만 선택합니다.
+        
+        """H&S 또는 IHS 패턴을 구성하는 5개의 핵심 구조적 극점을 탐색합니다.
+
+        가장 최근에 발생한 극점부터 시작하여 과거 기록을 역추적하며, H&S 패턴의
+        뼈대(V1, P1, V2, P2, V3) 또는 IHS 패턴의 뼈대(P1, V1, P2, V2, P3)를 식별합니다.
+
+        이 함수의 핵심적인 기능은 '연속 버퍼'를 이용한 지능적인 필터링입니다.
+        연속으로 나타나는 동일 타입의 극점들(예: 여러 개의 작은 봉우리)을 하나의
+        그룹으로 묶고, 그 그룹 내에서 가장 의미 있는 극점(가장 높거나 낮은 값)
+        하나만을 대표로 선택합니다. 이 과정을 통해 시장의 미세한 노이즈를
+        효과적으로 제거하고 명확한 패턴 구조만을 추출할 수 있습니다.
 
         Args:
-            all_extremums (List[Dict]): 시간순 정렬된 전체 극점 리스트.
-            lookback_limit (int): 구조를 찾기 위해 최대 몇 개의 극점까지 거슬러 올라갈지 제한.
+            all_extremums (List[Dict]): JS와 Secondary를 포함하여 시간순(`index` 기준)으로
+                정렬된 전체 극점 리스트.
+            lookback_limit (int): 패턴 구조를 찾기 위해 과거로 탐색할 최대 극점의 수.
+                계산 효율성과 패턴의 시의성을 보장하는 역할을 합니다.
 
         Returns:
-            Optional[Dict[str, Dict]]: 찾은 구조적 극점 딕셔너리 {'P1': {...}, 'V2': {...}, ...} 또는 None.
-                                    H&S의 경우 'pattern_type': 'HS', IH&S의 경우 'pattern_type': 'IHS' 포함.
+            Optional[Dict[str, Dict]]:
+                성공 시, 찾은 5개의 구조적 극점과 패턴 타입을 포함하는 딕셔너리를
+                반환합니다. 예: `{'V1': {...}, 'P1': {...}, 'V2': {...}, 'P2': {...}, 'V3': {...}, 'pattern_type': 'HS'}`
+                
+                실패 시 (유효한 구조를 찾지 못했거나 최종 시간 순서 검증에 실패한 경우),
+                `None`을 반환합니다.
         """
-        if len(all_extremums) < 4:
+        if len(all_extremums) < 5:
             return None
 
         structural_points = {}
@@ -987,16 +1006,21 @@ class PatternManager:
         consecutive_buffer = [] # 연속된 동일 타입 극점 임시 저장
 
         # 패턴 타입 결정 및 목표 극점 설정
+        # 마지막 극점이 'valley'인 경우에는 H&S 패턴을 찾습니다. 이 때 마지막 극점은 'V3'로 간주하며, 찾아야 하는 타겟은 'P2'로 설정
+        # 마지막 극점이 'peak'인 경우에는 IHS 패턴을 찾습니다. 이 때 마지막 극점은 'P3'로 간주하며, 찾아야 하는 타겟은 'V2'로 설정
+        # 확장: 문서/실전 요구에 따라 5개의 구조적 극점(V1,P1,V2,P2,V3 또는 P1,V1,P2,V2,P3)을 찾도록 조정
         if last_extremum.get('type', '').endswith('valley'):
             pattern_type = 'HS'
-            target_sequence = ['V3', 'P2', 'V2', 'P1'] # 찾아야 할 순서 (V3는 이미 찾음)
+            # 역순으로 찾아가며 V3(이미 있음) -> P2 -> V2 -> P1 -> V1 을 수집
+            target_sequence = ['V3', 'P2', 'V2', 'P1', 'V1']
             structural_points['V3'] = last_extremum
             current_target_role = 'P2'
             current_target_type = 'peak'
             points_found = 1
         elif last_extremum.get('type', '').endswith('peak'):
             pattern_type = 'IHS'
-            target_sequence = ['P3', 'V2', 'P2', 'V1'] # 찾아야 할 순서 (P3는 이미 찾음)
+            # 역순으로 찾아가며 P3(이미 있음) -> V2 -> P2 -> V1 -> P1 수집
+            target_sequence = ['P3', 'V2', 'P2', 'V1', 'P1']
             structural_points['P3'] = last_extremum
             current_target_role = 'V2'
             current_target_type = 'valley'
@@ -1007,8 +1031,25 @@ class PatternManager:
         # 루프 시작점: 마지막 극점 바로 이전부터
         search_index = current_index - 1
         lookback_count = 0
+        
+      
 
-        while search_index >= 0 and points_found < 4 and lookback_count < lookback_limit:
+        # --- 구조적 극점 역방향 탐색 루프 ---
+        # 가장 마지막 극점부터 시작하여 과거로 이동하며 H&S/IHS 패턴의 뼈대를 구성하는
+        # 5개의 구조적 극점을 순서대로 찾습니다.
+        #
+        # 핵심 전략:
+        # 1. '연속 버퍼(consecutive_buffer)'를 사용하여 연속으로 나타나는 동일 타입의 극점들을 그룹화합니다.
+        # 2. 다른 타입의 극점이 나타나면, 버퍼에 저장된 후보들 중 가장 의미 있는 극점
+        #    (Peak 중 최고가, Valley 중 최저가) 하나만을 대표로 선택하여 구조에 포함시킵니다.
+        #
+        # 종료 조건:
+        # - 5개의 구조적 극점을 모두 찾았을 경우
+        # - 탐색 범위 제한(lookback_limit)에 도달했을 경우
+        # - 더 이상 탐색할 과거 극점이 없을 경우
+        
+
+        while search_index >= 0 and points_found < 5 and lookback_count < lookback_limit:
             current_point = all_extremums[search_index]
             current_type = 'peak' if current_point.get('type', '').endswith('peak') else 'valley'
 
@@ -1028,7 +1069,7 @@ class PatternManager:
                     if representative_point:
                         structural_points[current_target_role] = representative_point
                         points_found += 1
-                        if points_found == 4: break # 필요한 4개 다 찾음
+                        if points_found == 5: break # 필요한 4개 다 찾음
 
                         # 다음 목표 설정
                         next_role_index = target_sequence.index(current_target_role) + 1
@@ -1045,7 +1086,7 @@ class PatternManager:
             lookback_count += 1
 
         # 루프 종료 후 마지막 버퍼 처리
-        if points_found < 4 and consecutive_buffer:
+        if points_found < len(target_sequence) and consecutive_buffer:
             representative_point = None
             if current_target_type == 'peak':
                 representative_point = max(consecutive_buffer, key=lambda x: x.get('value', -np.inf))
@@ -1057,11 +1098,13 @@ class PatternManager:
                 points_found += 1
 
         # 최종 확인
-        if points_found == 4:
+        # 성공적으로 모든 목표 포인트를 찾았는지 확인
+        if points_found == len(target_sequence):
             structural_points['pattern_type'] = pattern_type
-            # 시간 순서 재확인 (P1/V1 index < V2/P2 index < P2/V2 index < V3/P3 index)
+            # 시간 순서 재확인: target_sequence는 역순(최신->과거)으로 만들어졌으므로
+            # 역순으로 뒤집어 실제 시계열 순서(P1/V1 -> ... -> V3/P3)를 얻는다.
             indices = []
-            roles = target_sequence[::-1] # P1, V2, P2, V3 순서 또는 V1, P2, V2, P3 순서
+            roles = target_sequence[::-1]
             valid_sequence = True
             for role in roles:
                 if role not in structural_points:
@@ -1071,11 +1114,10 @@ class PatternManager:
             if valid_sequence and all(indices[i] < indices[i+1] for i in range(len(indices)-1)):
                 return structural_points
             else:
-                #logger.debug(f"구조적 극점 시간 순서 오류: {indices}")
-                logger.debug(f"Found structural points for {pattern_type}: P1/V1={structural_points.get(roles[0],{}).get('index')} V2/P2={structural_points.get(roles[1],{}).get('index')} P2/V2={structural_points.get(roles[2],{}).get('index')} V3/P3={structural_points.get(roles[3],{}).get('index')}")
+                logger.debug(f"Found structural points for {pattern_type}: indices={indices}")
                 return None # 시간 순서가 맞지 않으면 유효하지 않음
         else:
-            logger.debug(f"Could not find 4 structural points ({points_found} found).") # 로그 추가
+            logger.debug(f"Could not find 5 structural points ({points_found} found).") # 로그 추가
             return None
 
     # PatternManager 클래스 내
@@ -1092,9 +1134,9 @@ class PatternManager:
             completion_mode (str): 패턴 완성 조건 옵션 ('aggressive' 또는 'neckline').
         """
         all_extremums = sorted(peaks + valleys, key=lambda x: x.get('index', -1))
-        if len(all_extremums) < 4: return
+        if len(all_extremums) < 5: return
 
-        # 1. 구조적 극점 후보 찾기 (P1,V2,P2,V3 또는 V1,P2,V2,P3)
+        # 1. 구조적 극점 후보 찾기 (V1,P1,V2,P2,V3 또는 P1,V1,P2,V2,P3)
         structural_points = self._find_hs_ihs_structural_points(all_extremums)
         # logger.debug(f"Checking for H&S/IHS start: Structural points found: {'Yes' if structural_points else 'No'}") # 디버깅 필요 시 활성화
 
@@ -1104,23 +1146,41 @@ class PatternManager:
 
             try: # 딕셔너리 키 접근 및 검증 로직 오류 방지
                 if pattern_type == 'HS':
+                    
+                    v1 = structural_points.get('V1')  
                     p1 = structural_points.get('P1')
                     v2 = structural_points.get('V2')
                     p2 = structural_points.get('P2')
                     v3 = structural_points.get('V3')
+                    
 
-                    # logger.debug(f"[{log_date}] Checking H&S candidate: P1={p1.get('index')} V2={v2.get('index')} P2={p2.get('index')} V3={v3.get('index')}") # 디버깅 필요 시 활성화
+                    # logger.debug(f"[{log_date}] Checking H&S candidate: P1={p1.get('index')} V2={v2.get('index')} P2={p2.get('index')} V3={v3.get('index')} V1={getattr(v1,'index',None)}")
 
-                    if not all([p1, v2, p2, v3]):
-                        # logger.warning(f"[{log_date}] H&S 구조적 포인트 식별 실패.") # 이미 헬퍼 함수에서 로깅됨
+                    if not all([v1,p1, v2, p2, v3]):
                         return
 
-                    # 2. 기본 가격 조건 검증 (P2 > P1 만 확인)
                     is_valid = True
-                    # 검증 1: P2 > P1
+                    # 기본 규칙: 머리(P2)는 반드시 왼쪽 어깨(P1)보다 높아야 함
                     if not (p2.get('value', -np.inf) > p1.get('value', -np.inf)):
-                        is_valid = False; logger.debug(f"[{log_date}] H&S Initial Rule Fail: P2({p2.get('value'):.0f}) <= P1({p1.get('value'):.0f})")
-                    # --- V3 vs V2 몸통 검증 로직 제거됨 ---
+                        is_valid = False
+                        logger.info(f"[{log_date}] H&S Initial Rule Fail: P2({p2.get('value'):.0f}) <= P1({p1.get('value'):.0f})")
+                    
+                    # ✨ 검증 2: 제안에 따른 '패턴 조화' 검증 ✨
+                    if is_valid:
+                        shoulder_rise = p1['value'] - v1['value']
+                        head_rise_from_shoulder = p2['value'] - p1['value']
+                        
+                        if shoulder_rise <= 0:
+                            is_valid = False
+                            logger.info(f"[{log_date}] H&S Harmony Rule Fail: 어깨 높이(P1-V1)가 0 이하임")
+                        else:
+                            HEAD_RISE_TOLERANCE = 0.5
+                            ratio = head_rise_from_shoulder / shoulder_rise
+                            if ratio > HEAD_RISE_TOLERANCE:
+                                is_valid = False
+                                logger.info(f"[{log_date}] H&S Harmony Rule Fail: 머리/어깨 비율({ratio:.2f}) > {HEAD_RISE_TOLERANCE}")
+
+                    
 
                     # 3. 유효성 검증 통과 시 감지기 생성 시도
                     if is_valid:
@@ -1130,7 +1190,11 @@ class PatternManager:
                             logger.info(f"[{log_date}] H&S 패턴 후보 감지. P1={p1_date_str}, Completion Mode='{completion_mode}'")
 
                             # Detector 생성 시 completion_mode 전달
-                            detector = HeadAndShouldersDetector(p1, self.data, peaks, valleys, completion_mode='aggressive')
+                            # 추가: 수집된 V1(있을 경우) 정보를 메타로 전달하기 위해 생성자에 P1만 전달한 뒤 속성으로 할당
+                            detector = HeadAndShouldersDetector(p1, self.data, peaks, valleys, completion_mode=completion_mode)
+                            # V1 정보가 수집되어 있으면 detector에 할당(추후 활용 가능)
+                            if v1 and not detector.is_failed():
+                                detector.V1 = v1
                             if not detector.is_failed():
                                 detector.V2 = v2; detector.P2 = p2; detector.V3 = v3
                                 detector.stage = "RightNecklineValleyDetected" # V3까지 찾음, P3 탐색 및 검증 단계
@@ -1139,6 +1203,7 @@ class PatternManager:
                                 if detector not in self.failed_detectors: self.failed_detectors.append(detector)
 
                 elif pattern_type == 'IHS':
+                    p1 = structural_points.get('P1')
                     v1 = structural_points.get('V1')
                     p2 = structural_points.get('P2')
                     v2 = structural_points.get('V2')
@@ -1146,7 +1211,7 @@ class PatternManager:
 
                     # logger.debug(f"[{log_date}] Checking IHS candidate: V1={v1.get('index')} P2={p2.get('index')} V2={v2.get('index')} P3={p3.get('index')}") # 디버깅 필요 시 활성화
 
-                    if not all([v1, p2, v2, p3]):
+                    if not all([p1,v1, p2, v2, p3]):
                          # logger.warning(f"[{log_date}] IHS 구조적 포인트 식별 실패.")
                          return
 
@@ -1257,14 +1322,14 @@ class PatternManager:
                     logger.info(f"{log_prefix} Double Bottom 완성! {completion_details}")
                 elif isinstance(detector, HeadAndShouldersDetector):
                     completion_info = { 'date': candle['date'], 'price': candle['Close'], 'neckline': detector.neckline_level,
-                                        'P1': detector.P1, 'V2': detector.V2, 'P2': detector.P2, 'V3': detector.V3, 'P3': detector.P3 }
+                                        'V1': detector.V1, 'P1': detector.P1, 'V2': detector.V2, 'P2': detector.P2, 'V3': detector.V3, 'P3': detector.P3 }
                     self.completed_hs.append(completion_info)
                     p1_date_str = detector.P1.get('actual_date','N/A').strftime('%y%m%d') if detector.P1 and isinstance(detector.P1.get('actual_date'), pd.Timestamp) else 'N/A'
                     completion_details = f"H&S 시작 P1: {p1_date_str}"
                     logger.info(f"{log_prefix} Head and Shoulders 완성! {completion_details}")
                 elif isinstance(detector, InverseHeadAndShouldersDetector):
                     completion_info = { 'date': candle['date'], 'price': candle['Close'], 'neckline': detector.neckline_level,
-                                        'V1': detector.V1, 'P2': detector.P2_ihs, 'V2': detector.V2_ihs, 'P3': detector.P3_ihs, 'V3': detector.V3_ihs }
+                                        'P1': detector.P1, 'V1': detector.V1, 'P2': detector.P2_ihs, 'V2': detector.V2_ihs, 'P3': detector.P3_ihs, 'V3': detector.V3_ihs }
                     self.completed_ihs.append(completion_info)
                     v1_date_str = detector.V1.get('actual_date','N/A').strftime('%y%m%d') if detector.V1 and isinstance(detector.V1.get('actual_date'), pd.Timestamp) else 'N/A'
                     completion_details = f"IH&S 시작 V1: {v1_date_str}"

@@ -791,6 +791,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
             for hs in completed_hs:
                 try:
                     # HS 패턴 요소들 확인
+                    v1 = hs.get('V1')
                     p1 = hs.get('P1')
                     v2 = hs.get('V2')
                     p2 = hs.get('P2')
@@ -798,8 +799,8 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     p3 = hs.get('P3')
 
                     # 패턴 시작과 끝 날짜 확인
-                    if p1 and 'actual_date' in p1:
-                        start_date = pd.Timestamp(p1['actual_date'])
+                    if v1 and 'actual_date' in v1:
+                        start_date = pd.Timestamp(v1['actual_date'])
                         end_date = pd.Timestamp(hs['date']) if 'date' in hs else pd.Timestamp(hs.get('actual_date'))
                         if start_date <= end_date and start_date in dates and end_date in dates:
                             # 박스 영역 계산
@@ -882,6 +883,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
             for ihs in completed_ihs:
                 try:
                 # IHS 패턴 요소들 확인
+                    p1 = ihs.get('P1')
                     v1 = ihs.get('V1')
                     p2 = ihs.get('P2')
                     v2 = ihs.get('V2')
@@ -889,8 +891,8 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     v3 = ihs.get('V3')
                     
                     # 패턴 시작과 끝 날짜 확인
-                    if v1 and 'actual_date' in v1:
-                        start_date = pd.Timestamp(v1['actual_date'])
+                    if p1 and 'actual_date' in p1:
+                        start_date = pd.Timestamp(p1['actual_date'])
                         end_date = pd.Timestamp(ihs['date']) if 'date' in ihs else pd.Timestamp(ihs.get('actual_date')) 
                         
                         if start_date <= end_date and start_date in dates and end_date in dates:
@@ -1001,13 +1003,13 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
 if __name__ == '__main__':
     logger.info('=== DB-backed Dash 앱 시작 ===')
-    logger.info('UI 준비 완료: http://localhost:8058')
-    print('🌐 브라우저에서 http://localhost:8058 으로 접속하세요!')
+    logger.info('UI 준비 완료: http://localhost:8054')
+    print('🌐 브라우저에서 http://localhost:8054 으로 접속하세요!')
     # Start standalone app
     try:
         # app is defined earlier in this file (standalone implementation)
-        app.run(debug=True, host='127.0.0.1', port=8058, use_reloader=False)
+        app.run(debug=True, host='127.0.0.1', port=8054, use_reloader=False)
     except TypeError:
-        app.run(debug=True, host='127.0.0.1', port=8058)
+        app.run(debug=True, host='127.0.0.1', port=8054)
 
 
