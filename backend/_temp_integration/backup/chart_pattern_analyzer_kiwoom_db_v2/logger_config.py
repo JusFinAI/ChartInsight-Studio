@@ -43,8 +43,7 @@ def configure_logger(logger_name: str, log_file_prefix: str = None, logs_dir: Op
         fname = target_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         fh = logging.FileHandler(str(fname), mode='w', encoding='utf-8')
         fh.setLevel(level)
-        # 파일 로그에서는 모듈명/레벨이 반복되는 것을 피하기 위해 이름과 레벨을 제외한 간단한 포맷을 사용합니다.
-        fmt = logging.Formatter('%(asctime)s - %(message)s')
+        fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         fh.setFormatter(fmt)
         logger.addHandler(fh)
         file_handler_created = True

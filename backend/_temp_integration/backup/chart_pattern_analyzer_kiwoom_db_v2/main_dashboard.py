@@ -104,7 +104,7 @@ configure_logger(
     logger_name="backend",
     log_file_prefix="backend_events",
     logs_dir=MODULE_LOG_DIR,
-    level=logging.DEBUG,
+    level=logging.INFO,
 )
 
 # 알고리즘(엔진) 상세 로그 파일 생성: DEBUG 레벨
@@ -547,11 +547,11 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
             px, py = build_xy(js_peaks)
             if px:
-                fig.add_trace(go.Scatter(x=px, y=[y * 1.01 for y in py], mode='text', text=['P'] * len(px), textposition='top center', textfont=dict(size=12, color='black'), name='JS Peaks'))
+                fig.add_trace(go.Scatter(x=px, y=[y * 1.005 for y in py], mode='text', text=['P'] * len(px), textposition='top center', textfont=dict(size=12, color='black'), name='JS Peaks'))
 
             vx, vy = build_xy(js_valleys)
             if vx:
-                fig.add_trace(go.Scatter(x=vx, y=[y * 0.99 for y in vy], mode='text', text=['V'] * len(vx), textposition='bottom center', textfont=dict(size=12, color='black'), name='JS Valleys'))
+                fig.add_trace(go.Scatter(x=vx, y=[y * 0.995 for y in vy], mode='text', text=['V'] * len(vx), textposition='bottom center', textfont=dict(size=12, color='black'), name='JS Valleys'))
         except Exception as e:
             logger.warning(f"JS 표시 오류: {e}")
 
@@ -575,34 +575,13 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     xs.append(dt); ys.append(v)
                 return xs, ys
 
-            # 분류: live vs retro
-            sec_peaks_live = [p for p in sec_peaks if p.get('confidence') == 'provisional' and p.get('promotion', 'live') == 'live']
-            sec_peaks_retro = [p for p in sec_peaks if p.get('confidence') == 'provisional' and p.get('promotion') == 'retro']
+            spx, spy = build_xy_sec(sec_peaks)
+            if spx:
+                fig.add_trace(go.Scatter(x=spx, y=spy, mode='markers+text', marker=dict(symbol='circle', size=10, color='orange'), text=['sP']*len(spx), textposition='top center', textfont=dict(size=11, color='orange'), name='Sec Peaks'))
 
-            spx_live, spy_live = build_xy_sec(sec_peaks_live)
-            if spx_live:
-                # place marker slightly above candle high to avoid overlap
-                spy_live_pos = [y * 1.01 for y in spy_live]
-                fig.add_trace(go.Scatter(x=spx_live, y=spy_live_pos, mode='markers+text', marker=dict(symbol='circle', size=10, color='orange'), text=['sP']*len(spx_live), textposition='top center', textfont=dict(size=11, color='orange'), name='Sec Peaks (live)'))
-
-            spx_retro, spy_retro = build_xy_sec(sec_peaks_retro)
-            if spx_retro:
-                spy_retro_pos = [y * 1.01 for y in spy_retro]
-                fig.add_trace(go.Scatter(x=spx_retro, y=spy_retro_pos, mode='markers+text', marker=dict(symbol='square', size=10, color='darkorange'), text=['(sP)']*len(spx_retro), textposition='top center', textfont=dict(size=11, color='darkorange'), name='Sec Peaks (retro)'))
-
-            sec_valleys_live = [v for v in sec_valleys if v.get('confidence') == 'provisional' and v.get('promotion', 'live') == 'live']
-            sec_valleys_retro = [v for v in sec_valleys if v.get('confidence') == 'provisional' and v.get('promotion') == 'retro']
-
-            svx_live, svy_live = build_xy_sec(sec_valleys_live)
-            if svx_live:
-                # place marker slightly below candle low to avoid overlap
-                svy_live_pos = [y * 0.995 for y in svy_live]
-                fig.add_trace(go.Scatter(x=svx_live, y=svy_live_pos, mode='markers+text', marker=dict(symbol='circle', size=10, color='blue'), text=['sV']*len(svx_live), textposition='bottom center', textfont=dict(size=11, color='blue'), name='Sec Valleys (live)'))
-
-            svx_retro, svy_retro = build_xy_sec(sec_valleys_retro)
-            if svx_retro:
-                svy_retro_pos = [y * 0.995 for y in svy_retro]
-                fig.add_trace(go.Scatter(x=svx_retro, y=svy_retro_pos, mode='markers+text', marker=dict(symbol='square', size=10, color='darkblue'), text=['(sV)']*len(svx_retro), textposition='bottom center', textfont=dict(size=11, color='darkblue'), name='Sec Valleys (retro)'))
+            svx, svy = build_xy_sec(sec_valleys)
+            if svx:
+                fig.add_trace(go.Scatter(x=svx, y=svy, mode='markers+text', marker=dict(symbol='circle', size=10, color='blue'), text=['sV']*len(svx), textposition='bottom center', textfont=dict(size=11, color='blue'), name='Sec Valleys'))
         except Exception as e:
             logger.warning(f"Secondary 표시 오류: {e}")
 
@@ -751,8 +730,8 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                                         adjusted_end = end_date + pd.Timedelta(days=1)
                                 except Exception:
                                     adjusted_end = end_date + pd.Timedelta(days=1)
-                                box_y0 = slice_data['Low'].min() * 0.99
-                                box_y1 = slice_data['High'].max() * 1.01
+                                box_y0 = slice_data['Low'].min() * 0.995
+                                box_y1 = slice_data['High'].max() * 1.005
                                 shapes_to_draw.append(go.layout.Shape(type='rect', xref='x', yref='y', x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1, line=dict(color='#FF4560', width=1.5), fillcolor='rgba(0,0,0,0)', layer='above'))
                                 mid_point = start_date + (end_date - start_date) / 2
                                 fig.add_annotation(x=mid_point, y=box_y1, text='DT', font=dict(family='Arial, sans-serif', size=11, color='#FF4560'), bordercolor='#FF4560', borderwidth=1.5, borderpad=3, bgcolor='rgba(255,255,255,0.8)', opacity=0.8, showarrow=False, yshift=5)
@@ -787,8 +766,8 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                                         adjusted_end = end_date + pd.Timedelta(days=1)
                                 except Exception:
                                     adjusted_end = end_date + pd.Timedelta(days=1)
-                                box_y0 = slice_data['Low'].min() * 0.99
-                                box_y1 = slice_data['High'].max() * 1.01
+                                box_y0 = slice_data['Low'].min() * 0.995
+                                box_y1 = slice_data['High'].max() * 1.005
                                 shapes_to_draw.append(go.layout.Shape(type='rect', xref='x', yref='y', x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1, line=dict(color='#00C853', width=1.5), fillcolor='rgba(0,0,0,0)', layer='above'))
                                 mid_point = start_date + (end_date - start_date) / 2
                                 fig.add_annotation(x=mid_point, y=box_y1, text='DB', font=dict(family='Arial, sans-serif', size=11, color='#00C853'), bordercolor='#00C853', borderwidth=1.5, borderpad=3, bgcolor='rgba(255,255,255,0.8)', opacity=0.8, showarrow=False, yshift=5)
@@ -808,7 +787,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                 text=[f"HS" for p in completed_hs],
                 textposition='bottom center', name='HS Completed'
             ))
-            # HS 박스 및 넥라인 추가 (improved: fallback mapping + debug logs)
+            # HS 박스 및 넥라인 추가
             for hs in completed_hs:
                 try:
                     # HS 패턴 요소들 확인
@@ -819,148 +798,72 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     v3 = hs.get('V3')
                     p3 = hs.get('P3')
 
-                    # compute start_date with fallbacks (include V1/P1 first so left-shoulder is inside box)
-                    start_date = None
+                    # 패턴 시작과 끝 날짜 확인
                     if v1 and 'actual_date' in v1:
                         start_date = pd.Timestamp(v1['actual_date'])
-                    elif p1 and 'actual_date' in p1:
-                        start_date = pd.Timestamp(p1['actual_date'])
-                    elif v2 and 'actual_date' in v2:
-                        start_date = pd.Timestamp(v2['actual_date'])
-                    elif p2 and 'actual_date' in p2:
-                        start_date = pd.Timestamp(p2['actual_date'])
-
-                    end_date = pd.Timestamp(hs['date']) if 'date' in hs else pd.Timestamp(hs.get('actual_date'))
-
-                    # Debug logs to understand why box creation may be skipped
-                    try:
-                        logger.info(f"HS debug: start={start_date}, end={end_date}, has_p1={bool(p1)}, has_p2={bool(p2)}, has_v1={bool(v1)}, has_v2={bool(v2)}")
-                    except Exception:
-                        pass
-
-                    if start_date is None or end_date is None:
-                        try:
-                            logger.info(f"HS skip: start or end None (start={start_date}, end={end_date})")
-                        except Exception:
-                            pass
-                        continue
-
-                    # If start/end exist but not in dates, log the nearest mapping
-                    if not (start_date in dates and end_date in dates):
-                        try:
-                            ns = dates.get_indexer([start_date], method='nearest')[0]
-                            ne = dates.get_indexer([end_date], method='nearest')[0]
-                            logger.info(f"HS mapping fallback: nearest_start={dates[ns]}, nearest_end={dates[ne]}")
-                        except Exception:
-                            try:
-                                logger.info("HS mapping fallback: unable to map nearest indices")
-                            except Exception:
-                                pass
-
-                    # proceed only if date range makes sense
-                    if start_date <= end_date and (start_date in dates or end_date in dates):
-                        # Normalize to nearest indices if exact dates aren't present
-                        try:
-                            if start_date not in dates:
-                                start_idx = dates.get_indexer([start_date], method='nearest')[0]
-                                start_date = dates[start_idx]
-                            if end_date not in dates:
-                                end_idx = dates.get_indexer([end_date], method='nearest')[0]
-                                end_date = dates[end_idx]
-                        except Exception:
-                            pass
-
-                        slice_data = df.loc[start_date:end_date]
-                        if slice_data.empty:
-                            try:
-                                logger.info(f"HS skip: slice_data empty for {start_date} to {end_date}")
-                            except Exception:
-                                pass
-                            continue
-
-                        # 1. 시작일 바로 이전 날짜 찾기
-                        date_index = dates.get_loc(start_date)
-                        if date_index > 0:
-                            prev_date = dates[date_index - 1]
-                            adjusted_start = start_date - (start_date - prev_date) * 0.2
-                        else:
-                            adjusted_start = start_date - pd.Timedelta(days=1)  # 첫 날짜면 하루 전으로
-
-                        # 2. 종료일 바로 다음 날짜 찾기
-                        try:
-                            end_index = dates.get_loc(end_date)
-                            if end_index < len(dates) - 1:
-                                next_date = dates[end_index + 1]
-                                adjusted_end = end_date + (next_date - end_date) * 0.2
-                            else:
-                                adjusted_end = end_date + pd.Timedelta(days=1)  # 마지막 날짜면 하루 후로
-                        except Exception:
-                            adjusted_end = end_date + pd.Timedelta(days=1)
-
-                        box_y0 = slice_data['Low'].min() * 0.99
-                        box_y1 = slice_data['High'].max() * 1.01
-
-                        try:
-                            logger.info(f"HS box create attempt: start={adjusted_start}, end={adjusted_end}, y0={box_y0:.0f}, y1={box_y1:.0f}")
-                        except Exception:
-                            pass
-
-                        # 박스 추가 - 투명한 배경으로
-                        shapes_to_draw.append(go.layout.Shape(
-                            type="rect", xref="x", yref="y",
-                            x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1,
-                            line=dict(color="#FF6B8A", width=1.5, dash=None),
-                            fillcolor="rgba(255,105,135,0.06)",
-                            layer="above"
-                        ))
-
-                        # 패턴 라벨 추가 - 박스 중앙 상단에 표시
-                        mid_point = start_date + (end_date - start_date) / 2
-                        fig.add_annotation(
-                            x=mid_point,
-                            y=box_y1,
-                            text="HS",
-                            font=dict(
-                                family="Arial, sans-serif",
-                                size=11,
-                                color="#FF6B8A"
-                            ),
-                            bordercolor="#FF6B8A",
-                            borderwidth=1.5,
-                            borderpad=3,
-                            bgcolor="rgba(255,255,255,0.8)",
-                            opacity=0.8,
-                            showarrow=False,
-                            yshift=5
-                        )
-
-                        # 넥라인 추가 및 박스 끝까지 연장 (V2, V3 필요)
-                        if v2 and v3 and 'value' in v2 and 'value' in v3 and 'actual_date' in v2 and 'actual_date' in v3:
-                            v2_date = pd.Timestamp(v2['actual_date']); v3_date = pd.Timestamp(v3['actual_date']); v2_val = float(v2['value']); v3_val = float(v3['value'])
-                            try:
-                                v2_idx = df.index.get_loc(v2_date)
-                                v3_idx = df.index.get_loc(v3_date)
-                                if v3_idx != v2_idx:
-                                    v_slope = (v3_val - v2_val) / float(v3_idx - v2_idx)
+                        end_date = pd.Timestamp(hs['date']) if 'date' in hs else pd.Timestamp(hs.get('actual_date'))
+                        if start_date <= end_date and start_date in dates and end_date in dates:
+                            # 박스 영역 계산
+                            slice_data = df.loc[start_date:end_date]
+                            if not slice_data.empty:
+                                # 1. 시작일 바로 이전 날짜 찾기
+                                date_index = dates.get_loc(start_date)
+                                if date_index > 0:
+                                    prev_date = dates[date_index - 1]
+                                    adjusted_start = start_date - (start_date - prev_date) * 0.2
                                 else:
-                                    v_slope = 0.0
-                                adjusted_end_idx = df.index.get_indexer([adjusted_end], method='nearest')[0]
-                                y_at_end = v2_val + v_slope * float(adjusted_end_idx - v2_idx)
-                                # clamp to box range
+                                    adjusted_start = start_date - pd.Timedelta(days=1)  # 첫 날짜면 하루 전으로
+
+                                # 2. 종료일 바로 다음 날짜 찾기
                                 try:
-                                    y_at_end = max(min(y_at_end, box_y1), box_y0)
-                                except Exception:
-                                    pass
-                                try:
-                                    logger.info(f"HS neckline extend: v2_idx={v2_idx}, v3_idx={v3_idx}, adjusted_end_idx={adjusted_end_idx}, y_at_end={y_at_end:.0f}")
-                                except Exception:
-                                    pass
-                                shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=v2_date, y0=v2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#FF6B8A', width=1.2, dash='dash'), layer='above'))
-                            except Exception:
-                                try:
-                                    logger.info(f"HS neckline fallback to V2-V3: v2={v2_date}, v3={v3_date}")
-                                except Exception:
-                                    pass
+                                    end_index = dates.get_loc(end_date)
+                                    if end_index < len(dates) - 1:
+                                        next_date = dates[end_index + 1]
+                                        adjusted_end = end_date + (next_date - end_date) * 0.2
+                                    else:
+                                        adjusted_end = end_date + pd.Timedelta(days=1)  # 마지막 날짜면 하루 후로
+                                except:
+                                    adjusted_end = end_date + pd.Timedelta(days=1)
+
+                                box_y0 = slice_data['Low'].min() * 0.995
+                                box_y1 = slice_data['High'].max() * 1.005
+
+                                # 박스 추가 - 투명한 배경으로
+                                shapes_to_draw.append(go.layout.Shape(
+                                    type="rect", xref="x", yref="y",
+                                    x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1,
+                                    line=dict(color="#FF6B8A", width=1.5, dash=None),
+                                    fillcolor="rgba(0,0,0,0)",
+                                layer="above"
+                            ))
+
+                                # 패턴 라벨 추가 - 박스 중앙 상단에 표시
+                                mid_point = start_date + (end_date - start_date) / 2
+                                fig.add_annotation(
+                                    x=mid_point,
+                                    y=box_y1,
+                                    text="HS",
+                                    font=dict(
+                                        family="Arial, sans-serif",
+                                        size=11,
+                                        color="#FF6B8A"
+                                    ),
+                                    bordercolor="#FF6B8A",
+                                    borderwidth=1.5,
+                                    borderpad=3,
+                                    bgcolor="rgba(255,255,255,0.8)",
+                                    opacity=0.8,
+                                    showarrow=False,
+                                    yshift=5
+                                )
+
+                            # 넥라인 추가 (V2, V3 필요)
+                            if v2 and v3 and 'value' in v2 and 'value' in v3 and 'actual_date' in v2 and 'actual_date' in v3:
+                                v2_date = pd.Timestamp(v2['actual_date']); v3_date = pd.Timestamp(v3['actual_date']); v2_val = v2['value']; v3_val = v3['value']
+                                day_span = (v3_date - v2_date).days
+                                if day_span == 0: day_span = 1
+                                neck_slope = (v3_val - v2_val) / day_span
+                                # 라인 그리기는 V2~V3 사이만
                                 shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=v2_date, y0=v2_val, x1=v3_date, y1=v3_val, line=dict(color='#FF6B8A', width=1.2, dash='dash'), layer='above'))
                 except Exception as hs_err:
                     logger.warning(f"HS 요소 생성 오류: {hs_err}")
@@ -988,21 +891,11 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     v3 = ihs.get('V3')
                     
                     # 패턴 시작과 끝 날짜 확인
-                    # Prefer to start the IHS box after the left-shoulder points
-                    # so that P1/V1 are visually excluded. Use P2 (or V2) first,
-                    # then fall back to P1 if nothing else is available.
-                    start_date = None
                     if p1 and 'actual_date' in p1:
                         start_date = pd.Timestamp(p1['actual_date'])
-                    elif v1 and 'actual_date' in v1:
-                        start_date = pd.Timestamp(v1['actual_date'])
-                    elif p2 and 'actual_date' in p2:
-                        start_date = pd.Timestamp(p2['actual_date'])
-                    elif v2 and 'actual_date' in v2:
-                        start_date = pd.Timestamp(v2['actual_date'])
-                    end_date = pd.Timestamp(ihs['date']) if 'date' in ihs else pd.Timestamp(ihs.get('actual_date'))
-
-                    if start_date <= end_date and start_date in dates and end_date in dates:
+                        end_date = pd.Timestamp(ihs['date']) if 'date' in ihs else pd.Timestamp(ihs.get('actual_date')) 
+                        
+                        if start_date <= end_date and start_date in dates and end_date in dates:
                             # 박스 영역 계산
                             slice_data = df.loc[start_date:end_date]
                             if not slice_data.empty:
@@ -1027,80 +920,33 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                                 
                                 box_y0 = slice_data['Low'].min() * 0.995
                                 box_y1 = slice_data['High'].max() * 1.005
-                                # make IHS box slightly filled and log creation for debugging
-                                try:
-                                    logger.info(f"IHS box create attempt: start={adjusted_start}, end={adjusted_end}, y0={box_y0:.0f}, y1={box_y1:.0f}")
-                                except Exception:
-                                    pass
-                                shapes_to_draw.append(go.layout.Shape(type='rect', xref='x', yref='y', x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1, line=dict(color='#4CAF50', width=1.5), fillcolor='rgba(76,175,80,0.06)', layer='above'))
+                                shapes_to_draw.append(go.layout.Shape(type='rect', xref='x', yref='y', x0=adjusted_start, y0=box_y0, x1=adjusted_end, y1=box_y1, line=dict(color='#4CAF50', width=1.5), fillcolor='rgba(0,0,0,0)', layer='above'))
                                 mid_point = start_date + (end_date - start_date) / 2
                                 fig.add_annotation(x=mid_point, y=box_y1, text='IHS', font=dict(family='Arial, sans-serif', size=11, color='#4CAF50'), bordercolor='#4CAF50', borderwidth=1.5, borderpad=3, bgcolor='rgba(255,255,255,0.8)', opacity=0.8, showarrow=False, yshift=5)
                             # 넥라인 추가 (P2, P3 필요)
                             if p2 and p3 and 'value' in p2 and 'value' in p3 and 'actual_date' in p2 and 'actual_date' in p3:
-                                p2_date = pd.Timestamp(p2['actual_date']); p3_date = pd.Timestamp(p3['actual_date']); p2_val = float(p2['value']); p3_val = float(p3['value'])
-                                try:
-                                    p2_idx = df.index.get_loc(p2_date)
-                                    p3_idx = df.index.get_loc(p3_date)
-                                    if p3_idx != p2_idx:
-                                        p_slope = (p3_val - p2_val) / float(p3_idx - p2_idx)
-                                    else:
-                                        p_slope = 0.0
-                                    adjusted_end_idx = df.index.get_indexer([adjusted_end], method='nearest')[0]
-                                    y_at_end = p2_val + p_slope * float(adjusted_end_idx - p2_idx)
-                                    try:
-                                        y_at_end = max(min(y_at_end, box_y1), box_y0)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        logger.info(f"IHS neckline extend: p2_idx={p2_idx}, p3_idx={p3_idx}, adjusted_end_idx={adjusted_end_idx}, y_at_end={y_at_end:.0f}")
-                                    except Exception:
-                                        pass
-                                    shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
-                                except Exception:
-                                    try:
-                                        logger.info(f"IHS neckline fallback to P2-P3: p2={p2_date}, p3={p3_date}")
-                                    except Exception:
-                                        pass
-                                    shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=p3_date, y1=p3_val, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
+                                p2_date = pd.Timestamp(p2['actual_date']); p3_date = pd.Timestamp(p3['actual_date']); p2_val = p2['value']; p3_val = p3['value']
+                                day_span = (p3_date - p2_date).days
+                                if day_span == 0: day_span = 1
+                                neck_slope = (p3_val - p2_val) / day_span
+                                # 라인 그리기는 P2~P3 사이만
+                                shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=p3_date, y1=p3_val, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
                 except Exception as ihs_err:
                     logger.warning(f"IHS 요소 생성 오류: {ihs_err}")
 
     # apply shapes and finalize
-    # Ensure shapes are serializable dicts when applying to layout (plotly sometimes
-    # ignores GraphObjects Shape instances when passing directly). Convert defensively.
-    safe_shapes = []
-    for s in shapes_to_draw:
-        try:
-            if hasattr(s, 'to_plotly_json'):
-                safe_shapes.append(s.to_plotly_json())
-            else:
-                safe_shapes.append(dict(s))
-        except Exception:
-            # fallback: attempt to coerce via dict()
-            try:
-                safe_shapes.append(dict(s))
-            except Exception:
-                # skip unparsable shape to avoid breaking the layout update
-                continue
-
     fig.update_layout(
         title_text=f"{ticker} (DB) - Candles",
         xaxis_title='Date',
         height=900,
         xaxis_rangeslider_visible=False,
-        shapes=safe_shapes,
+        shapes=shapes_to_draw,
         showlegend=True,
         dragmode='pan'
     )
     # set y-axis range only for first subplot
     try:
         fig.update_yaxes(range=[plot_y_min, plot_y_max], row=1, col=1)
-    except Exception:
-        pass
-
-    # 마우스 휠(스크롤)로 확대/축소 시 Y축 방향 고정 -> X축 방향으로만 확대/축소 되도록 함
-    try:
-        fig.update_yaxes(fixedrange=True)
     except Exception:
         pass
 
@@ -1157,13 +1003,13 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
 if __name__ == '__main__':
     logger.info('=== DB-backed Dash 앱 시작 ===')
-    logger.info('UI 준비 완료: http://localhost:8058')
-    print('🌐 브라우저에서 http://localhost:8058 으로 접속하세요!')
+    logger.info('UI 준비 완료: http://localhost:8054')
+    print('🌐 브라우저에서 http://localhost:8054 으로 접속하세요!')
     # Start standalone app
     try:
         # app is defined earlier in this file (standalone implementation)
-        app.run(debug=True, host='127.0.0.1', port=8058, use_reloader=False)
+        app.run(debug=True, host='127.0.0.1', port=8054, use_reloader=False)
     except TypeError:
-        app.run(debug=True, host='127.0.0.1', port=8058)
+        app.run(debug=True, host='127.0.0.1', port=8054)
 
 

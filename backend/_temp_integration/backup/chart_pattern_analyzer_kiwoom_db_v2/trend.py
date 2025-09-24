@@ -14,7 +14,7 @@ class MarketTrendInfo:
     
 
 class TrendDetector:
-    def __init__(self, n_criteria=2, n_window=1):
+    def __init__(self, n_criteria=2):
         # ... (기존 V020의 변수들, MarketTrendInfo 사용 확인) ...
         self.state: int = 0
         self.state_direction: Optional[str] = None
@@ -41,22 +41,6 @@ class TrendDetector:
         self.newly_registered_peak: Optional[Dict] = None
         self.newly_registered_valley: Optional[Dict] = None
         self.previous_state_direction: Optional[str] = None
-        # 보관용: JS 확정으로 제거된 secondary 극점들을 저장(디버깅/감사용)
-        self.archived_secondaries: List[Dict] = []
-
-        # --- ✨ 1단계 추가: 신뢰도 모델 상태 관리 변수 ✨ ---
-        self.n_window: int = n_window # N-Window 크기 (기본값 3)
-
-        # Secondary 극점 탐색 상태를 관리합니다.
-        # 'IDLE': 기본 상태
-        # 'TRACKING_PEAK': JS Valley 이후 Secondary Peak 후보를 찾는 중
-        # 'TRACKING_VALLEY': JS Peak 이후 Secondary Valley 후보를 찾는 중
-        self.secondary_search_state: str = 'IDLE'
-
-        # 현재 추적 중인 1등급(Base) 극점 후보를 저장합니다.
-        # 이 후보는 더 나은 후보가 나타나면 갱신됩니다.
-        self.candidate_extremum: Optional[Dict] = None
-        # --- 1단계 추가 끝 ---
 
     def is_inside_bar(self, high: float, low: float, ref_high: Optional[float], ref_low: Optional[float]) -> bool:
         """내부봉(Inside Bar) 여부 확인"""
@@ -78,192 +62,7 @@ class TrendDetector:
         """로그 기록 (디버그 범위 내에서만 출력되도록 수정)"""
         log_date_str = date.strftime('%Y-%m-%d') if isinstance(date, pd.Timestamp) else str(date)
         if self.is_in_debug_range(date):
-            # Temporarily use a simple formatter for this logger call so that
-            # the logger name and level do not appear in the output for this module.
-            # We restore original formatters after emitting the log.
-            record_msg = f"[{log_date_str}] {message}"
-            # Collect handlers from this logger and its ancestors (where propagate applies)
-            handlers = []
-            old_formatters = []
-            try:
-                l = logger
-                while l is not None:
-                    if getattr(l, 'handlers', None):
-                        for h in l.handlers:
-                            handlers.append(h)
-                    if not getattr(l, 'propagate', True):
-                        break
-                    l = getattr(l, 'parent', None)
-
-                # deduplicate handlers while preserving order
-                seen = set()
-                unique_handlers = []
-                for h in handlers:
-                    if id(h) not in seen:
-                        unique_handlers.append(h)
-                        seen.add(id(h))
-
-                for h in unique_handlers:
-                    old_formatters.append(h.formatter)
-                    try:
-                        h.setFormatter(logging.Formatter("%(message)s"))
-                    except Exception:
-                        old_formatters[-1] = None
-
-                getattr(logger, level.lower())(record_msg)
-            finally:
-                # restore formatters
-                for h, fmt in zip(unique_handlers, old_formatters):
-                    if fmt is not None:
-                        try:
-                            h.setFormatter(fmt)
-                        except Exception:
-                            pass
-
-    # trend.py -> _find_base_extremum_n_window 함수
-
-    def _find_base_extremum_n_window(self, i: int, data: pd.DataFrame, detected_date: pd.Timestamp) -> List[Dict]:
-        """
-        [Look-ahead 버전]
-        N-Window 중앙 캔들 방식으로 1등급 '기본 극점'을 찾습니다.
-        """
-        # n_window 값은 좌우에 몇개의 데이터를 사용할지 결정
-        n = self.n_window
-
-        
-        if i < n * 2:
-            return None
-
-        window = data.iloc[i - n*2 : i + 1]
-        
-        # <<--- 핵심 수정 1: 검사 대상을 '중앙 캔들'로 변경 --- >>
-        # n=2일 경우, i-1이 중앙 캔들이 됩니다.
-        target_candle_index = i - n
-        target_candle = data.iloc[target_candle_index]
-
-        is_peak = target_candle['High'] == window['High'].max() and len(window[window['High'] == target_candle['High']]) == 1
-        is_valley = target_candle['Low'] == window['Low'].min() and len(window[window['Low'] == target_candle['Low']]) == 1
-
-        found = []
-        if is_peak:
-            found.append({
-                'type': 'sec_peak',
-                'confidence': 'base',
-                'index': target_candle_index, # <-- 인덱스도 target_candle_index 사용
-                'value': target_candle['High'],
-                'actual_date': data.index[target_candle_index], # <-- 날짜도 target_candle_index 사용
-                'detected_date': detected_date # 감지 시점은 현재 캔들(i)의 날짜
-            })
-        if is_valley:
-            # (Valley 로직도 대칭적으로 수정)
-            found.append({
-                'type': 'sec_valley',
-                'confidence': 'base',
-                'index': target_candle_index,
-                'value': target_candle['Low'],
-                'actual_date': data.index[target_candle_index],
-                'detected_date': detected_date
-            })
-
-        return found
-
-    def _handle_base_extremum(self, base_extremum: Dict, detected_date: pd.Timestamp):
-        """
-        [최종 완성 버전 V2]
-        1등급 극점을 처리합니다. 'strict 모드 무시' 로그와 개선된 에러 처리를 포함합니다.
-        """
-
-        # --- ✨ 'strict' 모드 무시 로그 추가 ✨ ---
-        if self.secondary_search_state == 'TRACKING_PEAK' and base_extremum['type'] == 'sec_peak':
-            last_prov_peak = next((p for p in reversed(self.secondary_peaks) if p.get('confidence') == 'provisional'), None)
-            if last_prov_peak and base_extremum['value'] > last_prov_peak['value']:
-                # last_prov_peak의 actual_date가 있으면 날짜 문자열로 포함
-                lp_date = last_prov_peak.get('actual_date')
-                try:
-                    if lp_date is not None and hasattr(lp_date, 'strftime'):
-                        lp_date_str = lp_date.strftime('%Y-%m-%d')
-                    else:
-                        lp_date_str = str(lp_date) if lp_date is not None else 'N/A'
-                except Exception:
-                    lp_date_str = str(lp_date)
-                self.log_event(detected_date, f"더 높은 Peak 후보({base_extremum['value']:.2f}) 발견. strict 모드이므로 기존 2등급 Peak({last_prov_peak['value']:.2f} @ {lp_date_str}) 유지.", "INFO")
-
-        elif self.secondary_search_state == 'TRACKING_VALLEY' and base_extremum['type'] == 'sec_valley':
-            last_prov_valley = next((p for p in reversed(self.secondary_valleys) if p.get('confidence') == 'provisional'), None)
-            if last_prov_valley and base_extremum['value'] < last_prov_valley['value']:
-                lv_date = last_prov_valley.get('actual_date')
-                try:
-                    if lv_date is not None and hasattr(lv_date, 'strftime'):
-                        lv_date_str = lv_date.strftime('%Y-%m-%d')
-                    else:
-                        lv_date_str = str(lv_date) if lv_date is not None else 'N/A'
-                except Exception:
-                    lv_date_str = str(lv_date)
-                self.log_event(detected_date, f"더 낮은 Valley 후보({base_extremum['value']:.2f}) 발견. strict 모드이므로 기존 2등급 Valley({last_prov_valley['value']:.2f} @ {lv_date_str}) 유지.", "INFO")
-        # --- ✨ 로그 추가 끝 ✨ ---
-
-        # --- Secondary Peak 탐색 및 승격 로직 ---
-        if self.secondary_search_state == 'TRACKING_PEAK' and base_extremum['type'] == 'sec_peak':
-            if self.candidate_extremum is None or base_extremum['value'] > self.candidate_extremum['value']:
-                self.candidate_extremum = base_extremum
-                self.log_event(detected_date, f"DEBUG: Peak 후보 갱신: {base_extremum['value']:.2f} at {base_extremum['actual_date'].strftime('%y%m%d')}", "DEBUG")
-                return
-            else:
-                provisional_peak = self.candidate_extremum.copy()
-                provisional_peak['confidence'] = 'provisional'
-                provisional_peak['detected_date'] = detected_date
-                # 표시용 메타: 즉시 승격(live)
-                provisional_peak['promotion'] = 'live'
-
-                # OHLC 보강: 개발 단계에서는 strict하게 실패를 드러내도록 함
-                try:
-                    actual_candle = self.data.loc[provisional_peak['actual_date']]
-                    provisional_peak.update({
-                        'open': actual_candle['Open'], 'high': actual_candle['High'],
-                        'low': actual_candle['Low'], 'close': actual_candle['Close']
-                    })
-                except KeyError:
-                    self.log_event(detected_date, f"심각한 오류: 2등급 Peak 승격 시 OHLC 날짜({provisional_peak.get('actual_date')})를 찾을 수 없음. 데이터 정합성 확인 필요.", "ERROR")
-                    raise
-
-                if not any(p.get('index') == provisional_peak.get('index') and p.get('type') == provisional_peak.get('type') for p in self.secondary_peaks):
-                    self.secondary_peaks.append(provisional_peak)
-                    self.newly_registered_peak = provisional_peak
-                    be_idx = provisional_peak.get('index', 'N/A')
-                    self.log_event(detected_date, f"(idx={be_idx}) ✨ 2등급 '잠정적 Peak' 승격: {provisional_peak['value']:.2f} at {provisional_peak['actual_date'].strftime('%y%m%d')} (트리거: {base_extremum['value']:.2f})", "INFO")
-
-                self.candidate_extremum = base_extremum
-
-        # --- Secondary Valley 탐색 및 승격 로직 (대칭) ---
-        elif self.secondary_search_state == 'TRACKING_VALLEY' and base_extremum['type'] == 'sec_valley':
-            if self.candidate_extremum is None or base_extremum['value'] < self.candidate_extremum['value']:
-                self.candidate_extremum = base_extremum
-                self.log_event(detected_date, f"DEBUG: Valley 후보 갱신: {base_extremum['value']:.2f} at {base_extremum['actual_date'].strftime('%y%m%d')}", "DEBUG")
-                return
-            else:
-                provisional_valley = self.candidate_extremum.copy()
-                provisional_valley['confidence'] = 'provisional'
-                provisional_valley['detected_date'] = detected_date
-                # 즉시 승격 표시(live) - Peak와 대칭되도록 설정
-                provisional_valley['promotion'] = 'live'
-
-                try:
-                    actual_candle = self.data.loc[provisional_valley['actual_date']]
-                    provisional_valley.update({
-                        'open': actual_candle['Open'], 'high': actual_candle['High'],
-                        'low': actual_candle['Low'], 'close': actual_candle['Close']
-                    })
-                except KeyError:
-                    self.log_event(detected_date, f"심각한 오류: 2등급 Valley 승격 시 OHLC 날짜({provisional_valley.get('actual_date')})를 찾을 수 없음. 데이터 정합성 확인 필요.", "ERROR")
-                    raise
-
-                if not any(v.get('index') == provisional_valley.get('index') and v.get('type') == provisional_valley.get('type') for v in self.secondary_valleys):
-                    self.secondary_valleys.append(provisional_valley)
-                    self.newly_registered_valley = provisional_valley
-                    be_idx = provisional_valley.get('index', 'N/A')
-                    self.log_event(detected_date, f"(idx={be_idx}) ✨ 2등급 '잠정적 Valley' 승격: {provisional_valley['value']:.2f} at {provisional_valley['actual_date'].strftime('%y%m%d')} (트리거: {base_extremum['value']:.2f})", "INFO")
-
-                self.candidate_extremum = base_extremum
+             getattr(logger, level.lower())(f"[{log_date_str}] {message}")
 
     # --- Helper 함수: 이전 마지막 극점 찾기 ---
     def _get_last_extremum_before(self, target_index: int, extremum_type: str) -> Optional[Dict]:
@@ -285,48 +84,7 @@ class TrendDetector:
         return max(prior_extremums, key=lambda x: x['index'])
     # -----------------------------------------
     def register_js_peak(self, index: int, value: float, actual_date: pd.Timestamp, detected_date: pd.Timestamp, data: pd.DataFrame):
-        """JS Peak 등록 (소급 승격 로직 포함)"""
-        # 소급 승격 로직: 시간적 범위를 명확히 제한하여 미래 사건이 과거 승격에 영향을 주지 않도록 함
-        if self.secondary_search_state == 'TRACKING_VALLEY' and self.candidate_extremum:
-            # 이전 JS Peak을 js_peaks에서만 조회하여 시간적 시작점을 JS 극점으로 제한
-            last_js_peak_list = [p for p in self.js_peaks if p.get('index', -1) < index]
-            last_js_peak = max(last_js_peak_list, key=lambda x: x['index']) if last_js_peak_list else None
-            last_js_peak_idx = last_js_peak['index'] if last_js_peak else -1
-
-            # 조사 범위를 이전 JS Peak 이후 ~ 현재 JS Peak(actual index) 이전으로 제한
-            new_js_peak_actual_idx = index
-            promoted_valleys_in_session = [
-                v for v in self.secondary_valleys
-                if v.get('confidence') == 'provisional' and last_js_peak_idx < v.get('index', -1) < new_js_peak_actual_idx
-            ]
-
-            if not promoted_valleys_in_session:
-                try:
-                    cand_actual = self.candidate_extremum.get('actual_date')
-                except Exception:
-                    cand_actual = None
-
-                if cand_actual is None:
-                    self.log_event(detected_date, f"소급승격 거부: candidate actual_date 없음 ({self.candidate_extremum})", "DEBUG")
-                else:
-                    if pd.Timestamp(cand_actual) <= pd.Timestamp(actual_date):
-                        provisional_valley = self.candidate_extremum.copy()
-                        provisional_valley['confidence'] = 'provisional'
-                        provisional_valley['detected_date'] = detected_date
-                        try:
-                            actual_candle = self.data.loc[provisional_valley['actual_date']]
-                            provisional_valley.update({
-                                'open': actual_candle['Open'], 'high': actual_candle['High'],
-                                'low': actual_candle['Low'], 'close': actual_candle['Close']
-                            })
-                            if not any(v.get('index') == provisional_valley.get('index') for v in self.secondary_valleys):
-                                self.secondary_valleys.append(provisional_valley)
-                                self.newly_registered_valley = provisional_valley
-                                self.log_event(detected_date, f"✨ 2등급 '잠정적 Valley' 소급 승격: {provisional_valley['value']:.2f} at {provisional_valley['actual_date'].strftime('%y%m%d')}", "INFO")
-                        except KeyError:
-                            self.log_event(detected_date, f"오류: 2등급 Valley 소급 승격 시 OHLC 정보 조회 실패({provisional_valley['actual_date']})", "ERROR")
-        # --- ✨ 소급 승격 로직 끝 ✨ ---
-
+        """JS Peak 등록 (OHLC 정보 포함) 및 기존 방식 Secondary Valley 검증"""
         try:
             actual_candle = data.loc[actual_date]
         except KeyError:
@@ -334,82 +92,50 @@ class TrendDetector:
             return
 
         new_peak = {
-            'type': 'js_peak', 'confidence': 'confirmed',
-            'index': index, 'value': value,
+            'type': 'js_peak', # 타입 명시
+            'index': index, 'value': value, # value는 High 값
             'actual_date': actual_date, 'detected_date': detected_date,
             'open': actual_candle['Open'], 'high': actual_candle['High'],
             'low': actual_candle['Low'], 'close': actual_candle['Close']
         }
         if not any(p['index'] == index for p in self.js_peaks):
             self.js_peaks.append(new_peak)
-            self.newly_registered_peak = new_peak
-            self.log_event(detected_date, f"Idx={index} JS Peak 등록: Val={value:.2f}, Actual={actual_date.strftime('%y%m%d')}", "INFO")
+            self.newly_registered_peak = new_peak # DTDB 및 H&S 매니저 트리거용
+            self.log_event(detected_date, f"JS Peak 등록: Idx={index}, Val={value:.2f}, Actual={actual_date.strftime('%y%m%d')}", "INFO")
 
-
-            self.secondary_search_state = 'TRACKING_VALLEY'
-            # 후보가 현재 'valley' 타입이면 유지, 그렇지 않으면 초기화
-            if not (self.candidate_extremum and 'valley' in self.candidate_extremum.get('type', '')):
-                self.candidate_extremum = None
-            self.log_event(detected_date, f"상태 전환: Secondary Valley 탐색 시작 ('TRACKING_VALLEY')", "INFO")
-
-            # --- JS Peak 확정에 따라 동일 위치의 secondary peak 정리(아카이브) ---
-            try:
-                removed = [p for p in self.secondary_peaks if p.get('index') == index]
-                if removed:
-                    self.archived_secondaries.extend(removed)
-                    self.secondary_peaks = [p for p in self.secondary_peaks if p.get('index') != index]
-                    for r in removed:
-                        self.log_event(detected_date, f"Secondary Peak archived due to JS Peak confirmation: idx={index}, val={r.get('value')}", "INFO")
-            except Exception as e:
-                self.log_event(detected_date, f"오류: JS Peak 확정 후 secondary 정리 실패: {e}", "ERROR")
-
+            # 기존 방식 Secondary Valley 검증 (JS Peak 2개 이상일 때)
+            if len(self.js_peaks) >= 2:
+                prev_peak = self._get_extremum_before(new_peak['index'], 'peak')
+                if prev_peak and prev_peak['index'] < new_peak['index']:
+                    start_index = prev_peak['index']
+                    end_index = new_peak['index']
+                    window_data = data.iloc[start_index : end_index + 1]
+                    if not window_data.empty:
+                        valley_value = window_data['Low'].min()
+                        valley_actual_date = window_data['Low'].idxmin()
+                        valley_index_relative = data.index.get_loc(valley_actual_date)
+                        # 조건: 양쪽 JS Peak 값보다 낮아야 함
+                        if valley_value < prev_peak['value'] and valley_value < new_peak['value']:
+                            sec_valley_indices = {v['index'] for v in self.secondary_valleys}
+                            js_valley_indices = {v['index'] for v in self.js_valleys}
+                            if valley_index_relative not in sec_valley_indices and valley_index_relative not in js_valley_indices:
+                                try:
+                                    sec_valley_candle = data.loc[valley_actual_date]
+                                    sec_valley = {
+                                        'type': 'sec_valley', # 타입 명시
+                                        'index': valley_index_relative, 'value': valley_value,
+                                        'actual_date': valley_actual_date, 'detected_date': detected_date, # JS 등록 시 검출
+                                        'open': sec_valley_candle['Open'], 'high': sec_valley_candle['High'],
+                                        'low': sec_valley_candle['Low'], 'close': sec_valley_candle['Close']
+                                    }
+                                    self.secondary_valleys.append(sec_valley)
+                                    self.newly_registered_valley = sec_valley # <<< 이 줄 추가 제안
+                                    self.log_event(detected_date, f"  -> Sec Valley (JS등록시) 등록: Idx={sec_valley['index']}, Val={sec_valley['value']:.2f}", "DEBUG")
+                                except KeyError:
+                                    self.log_event(detected_date, f"오류: Sec Valley(JS등록시) 등록 시 실제 캔들({valley_actual_date}) 찾기 실패", "ERROR")
 
     def register_js_valley(self, index: int, value: float, actual_date: pd.Timestamp, detected_date: pd.Timestamp, data: pd.DataFrame):
-        """JS Valley 등록 (소급 승격 로직 포함)"""
-        # 소급 승격 로직: 시간적 범위를 명확히 제한하여 미래 사건이 과거 승격에 영향을 주지 않도록 함
-        if self.secondary_search_state == 'TRACKING_PEAK' and self.candidate_extremum:
-            last_js_valley_list = [v for v in self.js_valleys if v.get('index', -1) < index]
-            last_js_valley = max(last_js_valley_list, key=lambda x: x['index']) if last_js_valley_list else None
-            last_js_valley_idx = last_js_valley['index'] if last_js_valley else -1
-
-            new_js_valley_actual_idx = index
-            promoted_peaks_in_session = [
-                p for p in self.secondary_peaks
-                if p.get('confidence') == 'provisional' and 
-                   last_js_valley_idx < p.get('index', -1) < new_js_valley_actual_idx
-            ]
-
-            if not promoted_peaks_in_session:
-                try:
-                    cand_actual = self.candidate_extremum.get('actual_date')
-                except Exception:
-                    cand_actual = None
-
-                if cand_actual is None:
-                    self.log_event(detected_date, f"소급승격 거부: candidate actual_date 없음 ({self.candidate_extremum})", "DEBUG")
-                else:
-                    if pd.Timestamp(cand_actual) <= pd.Timestamp(actual_date):
-                        provisional_peak = self.candidate_extremum.copy()
-                        provisional_peak['confidence'] = 'provisional'
-                        provisional_peak['detected_date'] = detected_date
-                        # 소급 승격 표시(retro)
-                        provisional_peak['promotion'] = 'retro'
-                        try:
-                            actual_candle = self.data.loc[provisional_peak['actual_date']]
-                            provisional_peak.update({
-                                'open': actual_candle['Open'], 'high': actual_candle['High'],
-                                'low': actual_candle['Low'], 'close': actual_candle['Close']
-                            })
-                            if not any(p.get('index') == provisional_peak.get('index') for p in self.secondary_peaks):
-                                self.secondary_peaks.append(provisional_peak)
-                                self.newly_registered_peak = provisional_peak
-                                be_idx = provisional_peak.get('index', 'N/A')
-                                # log with idx and promotion tag
-                                self.log_event(detected_date, f"(idx={be_idx}) ✨ 2등급 '잠정적 Peak' 소급 승격: {provisional_peak['value']:.2f} at {provisional_peak['actual_date'].strftime('%y%m%d')}", "INFO")
-                        except KeyError:
-                            self.log_event(detected_date, f"오류: 2등급 Peak 소급 승격 시 OHLC 정보 조회 실패({provisional_peak['actual_date']})", "ERROR")
-        # --- ✨ 소급 승격 로직 끝 ✨ ---
-
+        """JS Valley 등록 (OHLC 정보 포함) 및 기존 방식 Secondary Peak 검증"""
         try:
             actual_candle = data.loc[actual_date]
         except KeyError:
@@ -417,35 +143,47 @@ class TrendDetector:
             return
 
         new_valley = {
-            'type': 'js_valley', 'confidence': 'confirmed',
-            'index': index, 'value': value,
+            'type': 'js_valley', # 타입 명시
+            'index': index, 'value': value, # value는 Low 값
             'actual_date': actual_date, 'detected_date': detected_date,
             'open': actual_candle['Open'], 'high': actual_candle['High'],
             'low': actual_candle['Low'], 'close': actual_candle['Close']
         }
         if not any(v['index'] == index for v in self.js_valleys):
             self.js_valleys.append(new_valley)
-            self.newly_registered_valley = new_valley
-            self.log_event(detected_date, f"Idx={index} JS Valley 등록: Val={value:.2f}, Actual={actual_date.strftime('%y%m%d')}", "INFO")
+            self.newly_registered_valley = new_valley # DTDB 및 H&S 매니저 트리거용
+            self.log_event(detected_date, f"JS Valley 등록: Idx={index}, Val={value:.2f}, Actual={actual_date.strftime('%y%m%d')}", "INFO")
 
-            
-            self.secondary_search_state = 'TRACKING_PEAK'
-            # 후보가 현재 'peak' 타입이면 유지, 그렇지 않으면 초기화
-            if not (self.candidate_extremum and 'peak' in self.candidate_extremum.get('type', '')):
-                self.candidate_extremum = None
-            self.log_event(detected_date, f"상태 전환: Secondary Peak 탐색 시작 ('TRACKING_PEAK')", "INFO")
-
-            # --- JS Valley 확정에 따라 동일 위치의 secondary valley 정리(아카이브) ---
-            try:
-                removed = [v for v in self.secondary_valleys if v.get('index') == index]
-                if removed:
-                    self.archived_secondaries.extend(removed)
-                    self.secondary_valleys = [v for v in self.secondary_valleys if v.get('index') != index]
-                    for r in removed:
-                        self.log_event(detected_date, f"Secondary Valley archived due to JS Valley confirmation: idx={index}, val={r.get('value')}", "INFO")
-            except Exception as e:
-                self.log_event(detected_date, f"오류: JS Valley 확정 후 secondary 정리 실패: {e}", "ERROR")
-
+            # 기존 방식 Secondary Peak 검증 (JS Valley 2개 이상일 때)
+            if len(self.js_valleys) >= 2:
+                prev_valley = self._get_extremum_before(new_valley['index'], 'valley')
+                if prev_valley and prev_valley['index'] < new_valley['index']:
+                    start_index = prev_valley['index']
+                    end_index = new_valley['index']
+                    window_data = data.iloc[start_index : end_index + 1]
+                    if not window_data.empty:
+                        peak_value = window_data['High'].max()
+                        peak_actual_date = window_data['High'].idxmax()
+                        peak_index_relative = data.index.get_loc(peak_actual_date)
+                        # 조건: 양쪽 JS Valley 값보다 높아야 함
+                        if peak_value > prev_valley['value'] and peak_value > new_valley['value']:
+                            sec_peak_indices = {p['index'] for p in self.secondary_peaks}
+                            js_peak_indices = {p['index'] for p in self.js_peaks}
+                            if peak_index_relative not in sec_peak_indices and peak_index_relative not in js_peak_indices:
+                                try:
+                                    sec_peak_candle = data.loc[peak_actual_date]
+                                    sec_peak = {
+                                        'type': 'sec_peak', # 타입 명시
+                                        'index': peak_index_relative, 'value': peak_value,
+                                        'actual_date': peak_actual_date, 'detected_date': detected_date, # JS 등록 시 검출
+                                        'open': sec_peak_candle['Open'], 'high': sec_peak_candle['High'],
+                                        'low': sec_peak_candle['Low'], 'close': sec_peak_candle['Close']
+                                    }
+                                    self.secondary_peaks.append(sec_peak)
+                                    self.newly_registered_peak = sec_peak # <<< 이 줄 추가 제안
+                                    self.log_event(detected_date, f"  -> Sec Peak (JS등록시) 등록: Idx={sec_peak['index']}, Val={sec_peak['value']:.2f}", "DEBUG")
+                                except KeyError:
+                                    self.log_event(detected_date, f"오류: Sec Peak(JS등록시) 등록 시 실제 캔들({peak_actual_date}) 찾기 실패", "ERROR")
 
 
     def handle_state_0(self, current: pd.Series, prev: pd.Series, i: int, date: pd.Timestamp):
@@ -479,9 +217,6 @@ class TrendDetector:
         # 강한 움직임 검출 로직 (V015와 동일)
         previous_candle_range = prev['High'] - prev['Low']
         close_to_close_move = abs(current['Close'] - prev['Close'])
-        
-        
-        
         is_bullish_candle = current['Close'] > current['Open']
         is_bearish_candle = current['Close'] < current['Open']
         is_bullish_move = current['Close'] > prev['Close']
@@ -490,7 +225,6 @@ class TrendDetector:
         direction_match = ((self.state_direction == 'up' and is_bullish_candle and is_bullish_move) or
                         (self.state_direction == 'down' and is_bearish_candle and is_bearish_move))
 
-        
         if is_strong_move and direction_match:
             self.state = 3
             self.trend_count = self.n_criteria
@@ -704,30 +438,89 @@ class TrendDetector:
 
     # --- 메인 처리 함수: process_candle (V020 최종 수정 3) ---
     def process_candle(self, current: pd.Series, prev: pd.Series, i: int, date: pd.Timestamp, data: pd.DataFrame):
-        """개별 캔들 처리 메인 로직 (신뢰도 모델 3단계 적용)"""
+        """개별 캔들 처리 메인 로직 (V021 최종)"""
+        # --- 추가: 현재 캔들 OHLC 로그 기록 ---
         self.log_event(date, f"Candle OHLC: O={current['Open']:.2f} H={current['High']:.2f} L={current['Low']:.2f} C={current['Close']:.2f}", "DEBUG")
-        
+        # -----------------------------------
         self.newly_registered_peak = None
         self.newly_registered_valley = None
-        
-        # --- 1/2/3단계 로직 실행 ---
-        # 1단계: N-Window로 1등급 '기본 극점' 탐지 (리스트 반환)
-        base_extremums = self._find_base_extremum_n_window(i, data, date)
-
-        if base_extremums:
-            # 디버그/테스트 시 로그 레벨을 쉽게 바꿀 수 있도록 로컬 변수로 분리
-            log_level = "INFO"  # 필요 시 "INFO"로 변경하여 1등급 발견 로그를 보이게 할 수 있음
-            for base_extremum in base_extremums:
-                # 로그에 인덱스 정보를 추가하여 디버깅 시 위치를 바로 파악할 수 있도록 함
-                be_idx = base_extremum.get('index', 'N/A')
-                self.log_event(date, f"(idx={be_idx}) 1등급 '기본 극점' 후보 발견: {base_extremum['type']} @ {base_extremum['value']:.2f}", log_level)
-                # 3단계: 각 1등급 극점을 처리하여 2등급으로 승격 시도
-                self._handle_base_extremum(base_extremum, date)
-        # --- 로직 실행 끝 ---
-
         is_inside = self.is_inside_bar(current['High'], current['Low'], self.reference_high, self.reference_low)
 
-        
+        # --- 1. 실시간 돌파 감지 및 Secondary 탐색/등록 (항상 양방향 체크) ---
+        # 1-1. 상승 돌파 이벤트 확인 및 처리
+        latest_peak = self._get_last_extremum('peak')
+        if latest_peak:
+            is_up_breakout = current['Close'] > current['Open'] and current['Close'] > latest_peak['value']
+            if is_up_breakout:
+                self.log_event(date, f"^^^ 상승 돌파 이벤트 감지 (Close {current['Close']:.2f} > Latest Peak {latest_peak['value']:.2f}) ^^^", "INFO")
+                window_data = data.iloc[latest_peak['index'] : i + 1]
+                if not window_data.empty:
+                    sec_valley_value = window_data['Low'].min()
+                    sec_valley_actual_date = window_data['Low'].idxmin()
+                    sec_valley_index = data.index.get_loc(sec_valley_actual_date)
+                    prev_valley_before_peak = self._get_extremum_before(latest_peak['index'], 'valley')
+                    
+                    # 최소 조건 추가: 이전 밸리가 존재하고, 현재 밸리가 이전 밸리보다 크거나 같아야 함
+                    if prev_valley_before_peak and sec_valley_value > prev_valley_before_peak['value']: # HL 조건 만족
+                        self.log_event(date, f"  -> HL 조건 만족 (Sec Valley {sec_valley_value:.2f} > Prev Valley {prev_valley_before_peak['value']:.2f})", "INFO")
+                        sec_valley_indices = {v['index'] for v in self.secondary_valleys}
+                        js_valley_indices = {v['index'] for v in self.js_valleys}
+                        if sec_valley_index not in sec_valley_indices and sec_valley_index not in js_valley_indices:
+                            try:
+                                sec_valley_candle = data.loc[sec_valley_actual_date]
+                                sec_valley = {
+                                    'type': 'sec_valley', # 타입 명시
+                                    'index': sec_valley_index, 'value': sec_valley_value,
+                                    'actual_date': sec_valley_actual_date, 'detected_date': date,
+                                    'open': sec_valley_candle['Open'], 'high': sec_valley_candle['High'],
+                                    'low': sec_valley_candle['Low'], 'close': sec_valley_candle['Close']
+                                }
+                                self.secondary_valleys.append(sec_valley)
+                                self.newly_registered_valley = sec_valley # <<< 이 줄 추가 제안
+                                self.log_event(date, f"  -> Sec Valley (돌파탐색) 등록: Idx={sec_valley_index}, Val={sec_valley_value:.2f}", "INFO")
+                            except KeyError:
+                                self.log_event(date, f"오류: Sec Valley(돌파) 등록 시 실제 캔들({sec_valley_actual_date}) 찾기 실패", "ERROR")
+                    # else: # HL 불만족 로그
+                    #    self.log_event(date, f"  -> HL 조건 불충족...", "DEBUG")
+                # else: # window 비어있음 로그
+                #    self.log_event(date, f"  -> Sec Valley 탐색 위한 window_data 비어있음...", "WARNING")
+
+        # 1-2. 하락 돌파 이벤트 확인 및 처리
+        latest_valley = self._get_last_extremum('valley')
+        if latest_valley:
+            is_down_breakout = current['Close'] < current['Open'] and current['Close'] < latest_valley['value']
+            if is_down_breakout:
+                self.log_event(date, f"vvv 하락 돌파 이벤트 감지 (Close {current['Close']:.2f} < Latest Valley {latest_valley['value']:.2f}) vvv", "INFO")
+                window_data = data.iloc[latest_valley['index'] : i + 1]
+                if not window_data.empty:
+                    sec_peak_value = window_data['High'].max()
+                    sec_peak_actual_date = window_data['High'].idxmax()
+                    sec_peak_index = data.index.get_loc(sec_peak_actual_date)
+                    prev_peak_before_valley = self._get_extremum_before(latest_valley['index'], 'peak')
+                    if prev_peak_before_valley and sec_peak_value < prev_peak_before_valley['value']: # LH 조건 만족
+                        self.log_event(date, f"  -> LH 조건 만족 (Sec Peak {sec_peak_value:.2f} < Prev Peak {prev_peak_before_valley['value']:.2f})", "INFO")
+                        sec_peak_indices = {p['index'] for p in self.secondary_peaks}
+                        js_peak_indices = {p['index'] for p in self.js_peaks}
+                        if sec_peak_index not in sec_peak_indices and sec_peak_index not in js_peak_indices:
+                            try:
+                                sec_peak_candle = data.loc[sec_peak_actual_date]
+                                sec_peak = {
+                                    'type': 'sec_peak', # 타입 명시
+                                    'index': sec_peak_index, 'value': sec_peak_value,
+                                    'actual_date': sec_peak_actual_date, 'detected_date': date,
+                                    'open': sec_peak_candle['Open'], 'high': sec_peak_candle['High'],
+                                    'low': sec_peak_candle['Low'], 'close': sec_peak_candle['Close']
+                                }
+                                self.secondary_peaks.append(sec_peak)
+                                self.newly_registered_peak = sec_peak # <<< 이 줄 추가 제안
+                                self.log_event(date, f"  -> Sec Peak (돌파탐색) 등록: Idx={sec_peak_index}, Val={sec_peak_value:.2f}", "INFO")
+                            except KeyError:
+                                self.log_event(date, f"오류: Sec Peak(돌파) 등록 시 실제 캔들({sec_peak_actual_date}) 찾기 실패", "ERROR")
+                    # else: # LH 불만족 로그
+                    #      self.log_event(date, f"  -> LH 조건 불충족...", "DEBUG")
+                # else: # window 비어있음 로그
+                #     self.log_event(date, f"  -> Sec Peak 탐색 위한 window_data 비어있음...", "WARNING")
+        # --- 실시간 돌파 감지 끝 ---
 
         # --- 2. (기존) 상태 머신 로직 실행 ---
         if self.state == 0: self.handle_state_0(current, prev, i, date)

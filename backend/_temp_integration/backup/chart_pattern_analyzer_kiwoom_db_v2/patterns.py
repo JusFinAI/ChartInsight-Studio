@@ -4,8 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 
-# Use the central 'backend' logger so file-formatting is controlled centrally
-logger = logging.getLogger('backend')
+logger = logging.getLogger(__name__)
 
 class PatternDetector:
     """DT/DB/HS/IHS 패턴 감지기 기본 클래스"""
@@ -143,12 +142,6 @@ class HeadAndShouldersDetector(PatternDetector):
             if newly_registered_peak and newly_registered_peak['index'] > self.V3['index']:
                 potential_p3 = newly_registered_peak
                 self.log_event(f"Stage 4: P3 후보 발견 {potential_p3['actual_date'].strftime('%y%m%d')}({potential_p3['value']:.0f}). 검증 시작.", "DEBUG")
-
-                # 개발 모드: P3는 오직 JS Peak(js_peak)만 허용하도록 함 (secondary 지연 문제 완화)
-                # non-js 후보는 무시하고 다음 이벤트를 기다림
-                if potential_p3.get('type') != 'js_peak':
-                    self.log_event(f"무시: P3 후보 타입이 js_peak 아님 (type={potential_p3.get('type')})", "DEBUG")
-                    return
 
                 # --- 검증 규칙 적용 ---
                 p3_valid = True # 검증 통과 여부 플래그
@@ -335,12 +328,6 @@ class InverseHeadAndShouldersDetector(PatternDetector):
             if newly_registered_valley and newly_registered_valley['index'] > self.P3_ihs['index']:
                 potential_v3 = newly_registered_valley
                 self.log_event(f"Stage 4: V3 후보 발견 {potential_v3['actual_date'].strftime('%y%m%d')}({potential_v3['value']:.0f}). 검증 시작.", "DEBUG")
-
-                # 개발 모드: V3는 오직 JS Valley(js_valley)만 허용하도록 함 (secondary 지연 문제 완화)
-                # non-js 후보는 무시하고 다음 이벤트를 기다림
-                if potential_v3.get('type') != 'js_valley':
-                    self.log_event(f"무시: V3 후보 타입이 js_valley 아님 (type={potential_v3.get('type')})", "DEBUG")
-                    return
 
                 # --- 검증 규칙 적용 ---
                 v3_valid = True # 검증 통과 여부 플래그
@@ -579,13 +566,17 @@ class DoubleBottomDetector(PatternDetector):
     def _get_straight_peak(self):
          # 1. 첫 번째 Valley의 시간적 위치(인덱스)를 가져옵니다.
         valley_index = self.first_extremum['index']
-        # 2. Detector가 알고 있는 모든 Peak 목록(self.peaks)에서 첫 번째 Valley 이전에 발생한 Peak들을 선택합니다.
-        #    변경 사항: 이제 JS 전용 필터를 제거하여, 신뢰도 등급과 상관없이 가장 마지막에 나온 Peak를 기준으로 사용합니다.
-        prior_peaks = [p for p in self.peaks if p['index'] < valley_index]
-        if prior_peaks:
+        # 2. Detector가 알고 있는 모든 Peak 목록(self.peaks)에서 조건을 만족하는 Peak들만 골라냅니다.
+        #    조건 1: Peak의 시간적 위치(p['index'])가 첫 번째 Valley의 위치(valley_index)보다 '이전'이어야 합니다.
+        #    조건 2: Peak의 타입(p.get('type'))이 반드시 'js_peak' (주요 고점)이어야 합니다. (Secondary Peak는 제외)
+        prior_peaks = [p for p in self.peaks if p['index'] < valley_index and p.get('type') == 'js_peak']
+        # 3. 조건을 만족하는 JS Peak들이 하나 이상 존재하는지 확인합니다.
+        if prior_peaks: 
+            # 4. 존재한다면, 그중에서 시간적으로 가장 마지막(가장 최근)에 발생한 JS Peak를 찾습니다.
+            #    (max 함수의 key=lambda x: x['index']는 인덱스 값이 가장 큰 Peak, 즉 가장 최근 Peak를 찾으라는 의미입니다.)
+            # 5. 찾은 가장 마지막 JS Peak의 가격 값('value')을 반환합니다. 이것이 straight_peak 값이 됩니다.
             return max(prior_peaks, key=lambda x: x['index'])['value']
-        else:
-            return None
+        else: return None
 
     def update(self, candle, newly_registered_peak=None, newly_registered_valley=None): # 시그니처 통일
         """DB 패턴 상태 업데이트 (V015 로직 기반)"""
@@ -819,12 +810,10 @@ class DoubleTopDetector(PatternDetector):
     def _get_straight_valley(self):
         """첫 번째 Peak 형성 직전의 마지막 JS Valley 값"""
         peak_index = self.first_extremum['index']
-        # 변경 사항: JS 전용 필터 제거. 가장 마지막에 발생한 Valley(등급 무관)를 사용
-        prior_valleys = [v for v in self.valleys if v['index'] < peak_index]
-        if prior_valleys:
-            return max(prior_valleys, key=lambda x: x['index'])['value']
-        else:
-            return None
+        # self.valleys에는 JS와 Secondary 포함. JS Valley만 필터링
+        prior_valleys = [v for v in self.valleys if v['index'] < peak_index and v.get('type') == 'js_valley']
+        if prior_valleys: return max(prior_valleys, key=lambda x: x['index'])['value']
+        else: return None
 
     def update(self, candle, newly_registered_peak=None, newly_registered_valley=None): # 시그니처 통일
         """DT 패턴 상태 업데이트"""
@@ -982,25 +971,30 @@ class PatternManager:
     
     def _find_hs_ihs_structural_points(self, all_extremums: List[Dict], lookback_limit: int = 15) -> Optional[Dict[str, Dict]]:
         
-        """H&S 또는 IHS 패턴을 구성하는 5개의 핵심 구조적 극점을 탐색합니다. (신뢰도 우선)
+        """H&S 또는 IHS 패턴을 구성하는 5개의 핵심 구조적 극점을 탐색합니다.
 
         가장 최근에 발생한 극점부터 시작하여 과거 기록을 역추적하며, H&S 패턴의
         뼈대(V1, P1, V2, P2, V3) 또는 IHS 패턴의 뼈대(P1, V1, P2, V2, P3)를 식별합니다.
 
-        핵심 아이디어: 연속으로 발생하는 동일 타입의 극점들(consecutive_buffer)을
-        그룹화한 뒤, **신뢰도(confidence)** 를 우선으로 삼아 대표 극점을 선택합니다.
-        신뢰도는 'confirmed' > 'provisional' > 'base' 순이며, 동률인 경우 가격(peak는 최대, valley는 최소)
-        을 기준으로 대표를 결정합니다. 이로써 트렌드 감지기의 계층적 신뢰도 모델을
-        PatternManager에서 적극 활용할 수 있습니다.
+        이 함수의 핵심적인 기능은 '연속 버퍼'를 이용한 지능적인 필터링입니다.
+        연속으로 나타나는 동일 타입의 극점들(예: 여러 개의 작은 봉우리)을 하나의
+        그룹으로 묶고, 그 그룹 내에서 가장 의미 있는 극점(가장 높거나 낮은 값)
+        하나만을 대표로 선택합니다. 이 과정을 통해 시장의 미세한 노이즈를
+        효과적으로 제거하고 명확한 패턴 구조만을 추출할 수 있습니다.
 
         Args:
             all_extremums (List[Dict]): JS와 Secondary를 포함하여 시간순(`index` 기준)으로
                 정렬된 전체 극점 리스트.
             lookback_limit (int): 패턴 구조를 찾기 위해 과거로 탐색할 최대 극점의 수.
+                계산 효율성과 패턴의 시의성을 보장하는 역할을 합니다.
 
         Returns:
-            Optional[Dict[str, Dict]]: 발견 시 5개 구조적 극점과 'pattern_type'을 포함한 딕셔너리,
-            실패 시 None 반환.
+            Optional[Dict[str, Dict]]:
+                성공 시, 찾은 5개의 구조적 극점과 패턴 타입을 포함하는 딕셔너리를
+                반환합니다. 예: `{'V1': {...}, 'P1': {...}, 'V2': {...}, 'P2': {...}, 'V3': {...}, 'pattern_type': 'HS'}`
+                
+                실패 시 (유효한 구조를 찾지 못했거나 최종 시간 순서 검증에 실패한 경우),
+                `None`을 반환합니다.
         """
         if len(all_extremums) < 5:
             return None
@@ -1065,38 +1059,24 @@ class PatternManager:
             else:
                 # 다른 타입 발견 -> 이전 버퍼 처리 및 새 타입 검색 시작
                 if consecutive_buffer:
-                    # --- 신규: 신뢰도 우선 선택 로직 적용 ---
+                    # 이전 버퍼에서 대표 극점 선택
                     representative_point = None
-                    # 1) 신뢰도 맵 정의
-                    confidence_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
-                    for p in consecutive_buffer:
-                        # 안전: 만약 confidence 필드가 없으면 'base'로 간주
-                        p_conf = p.get('confidence', 'base')
-                        p['confidence_score'] = confidence_map.get(p_conf, 1)
-
-                    # 2) 버퍼 내에서 최대 신뢰도 점수 선택
-                    max_confidence_score = max(p['confidence_score'] for p in consecutive_buffer)
-                    top_tier_points = [p for p in consecutive_buffer if p['confidence_score'] == max_confidence_score]
-
-                    # 3) 동률일 경우 가격 기준으로 대표 선택 (peak -> max, valley -> min)
-                    if top_tier_points:
-                        if current_target_type == 'peak':
-                            representative_point = max(top_tier_points, key=lambda x: x.get('value', -np.inf))
-                        else:
-                            representative_point = min(top_tier_points, key=lambda x: x.get('value', np.inf))
-                    # --- 로직 적용 끝 ---
+                    if current_target_type == 'peak':
+                        representative_point = max(consecutive_buffer, key=lambda x: x.get('value', -np.inf))
+                    else: # valley
+                        representative_point = min(consecutive_buffer, key=lambda x: x.get('value', np.inf))
 
                     if representative_point:
                         structural_points[current_target_role] = representative_point
                         points_found += 1
-                        if points_found == len(target_sequence): break # 목표 개수만큼 찾으면 종료
+                        if points_found == 5: break # 필요한 4개 다 찾음
 
                         # 다음 목표 설정
                         next_role_index = target_sequence.index(current_target_role) + 1
                         if next_role_index < len(target_sequence):
                             current_target_role = target_sequence[next_role_index]
                             current_target_type = 'peak' if current_target_role.startswith('P') else 'valley'
-                        else: break
+                        else: break # 예상치 못한 상황, 루프 종료
 
                 # 새 타입 검색 준비
                 consecutive_buffer = [current_point] # 새 버퍼 시작
@@ -1105,21 +1085,13 @@ class PatternManager:
             search_index -= 1
             lookback_count += 1
 
-        # 루프 종료 후 마지막 버퍼 처리 (위와 동일한 신뢰도 우선 로직 적용)
+        # 루프 종료 후 마지막 버퍼 처리
         if points_found < len(target_sequence) and consecutive_buffer:
             representative_point = None
-            confidence_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
-            for p in consecutive_buffer:
-                p_conf = p.get('confidence', 'base')
-                p['confidence_score'] = confidence_map.get(p_conf, 1)
-            max_confidence_score = max(p['confidence_score'] for p in consecutive_buffer)
-            top_tier_points = [p for p in consecutive_buffer if p['confidence_score'] == max_confidence_score]
-
-            if top_tier_points:
-                if current_target_type == 'peak':
-                    representative_point = max(top_tier_points, key=lambda x: x.get('value', -np.inf))
-                else:
-                    representative_point = min(top_tier_points, key=lambda x: x.get('value', np.inf))
+            if current_target_type == 'peak':
+                representative_point = max(consecutive_buffer, key=lambda x: x.get('value', -np.inf))
+            else: # valley
+                representative_point = min(consecutive_buffer, key=lambda x: x.get('value', np.inf))
 
             if representative_point:
                 structural_points[current_target_role] = representative_point
@@ -1172,20 +1144,6 @@ class PatternManager:
             pattern_type = structural_points.get('pattern_type')
             log_date = all_extremums[-1].get('detected_date', pd.Timestamp.now()).strftime('%Y-%m-%d')
 
-            # Debug hook: if key structural extremums are missing, log and expose for debugger
-            # - For HS we expect V1 present; for IHS we expect P1 present.
-            try:
-                if pattern_type == 'HS' and (not structural_points.get('V1')):
-                    logger.info(f"[{log_date}] HS structural points missing V1 - keys={list(structural_points.keys())}")
-                    # expose for interactive debugging
-                    self._last_structural_issue = {'pattern_type': 'HS', 'missing': 'V1', 'structural_points': structural_points}
-                if pattern_type == 'IHS' and (not structural_points.get('P1')):
-                    logger.info(f"[{log_date}] IHS structural points missing P1 - keys={list(structural_points.keys())}")
-                    self._last_structural_issue = {'pattern_type': 'IHS', 'missing': 'P1', 'structural_points': structural_points}
-            except Exception:
-                # Do not break pattern flow during debug logging
-                logger.debug(f"[{log_date}] structural points debug hook encountered an error", exc_info=True)
-
             try: # 딕셔너리 키 접근 및 검증 로직 오류 방지
                 if pattern_type == 'HS':
                     
@@ -1227,13 +1185,6 @@ class PatternManager:
                     # 3. 유효성 검증 통과 시 감지기 생성 시도
                     if is_valid:
                         # 동일한 P1으로 시작하는 활성 H&S 감지기가 없는지 확인
-                        # NOTE: 이전에는 V3가 반드시 'js_valley'여야 한다는 강제 필터가 있었습니다.
-                        # 해당 필터는 제거(주석 처리)하여 TrendDetector가 보고하는 provisional 극점으로도
-                        # H&S 탐색을 시작할 수 있도록 합니다. (신뢰도 기반 필터링은 _find_hs_ihs_structural_points에서 수행됨)
-                        # if v3.get('type') != 'js_valley':
-                        #     logger.debug(f"[{log_date}] Skip H&S creation: V3 is not js_valley (type={v3.get('type')}). Awaiting future js_valley.")
-                        #     return
-
                         if not any(isinstance(d, HeadAndShouldersDetector) and d.P1 and d.P1.get('index') == p1.get('index') for d in self.active_detectors):
                             p1_date_str = p1.get('actual_date', pd.Timestamp('NaT')).strftime('%y%m%d') if isinstance(p1.get('actual_date'), pd.Timestamp) else 'N/A'
                             logger.info(f"[{log_date}] H&S 패턴 후보 감지. P1={p1_date_str}, Completion Mode='{completion_mode}'")
@@ -1271,16 +1222,9 @@ class PatternManager:
                         is_valid = False; logger.debug(f"[{log_date}] IHS Initial Rule Fail: V2({v2.get('value'):.0f}) >= V1({v1.get('value'):.0f})")
                     # --- P3 vs P2 몸통 검증 로직 제거됨 ---
 
-                        # 3. 유효성 검증 통과 시 감지기 생성 시도
+                    # 3. 유효성 검증 통과 시 감지기 생성 시도
                     if is_valid:
                         # 동일한 V1으로 시작하는 활성 IH&S 감지기가 없는지 확인
-                        # NOTE: 이전에는 P3가 반드시 'js_peak'여야 한다는 강제 필터가 있었습니다.
-                        # 해당 필터는 제거(주석 처리)하여 TrendDetector가 보고하는 provisional 극점으로도
-                        # IH&S 탐색을 시작할 수 있도록 합니다. (신뢰도 기반 필터링은 _find_hs_ihs_structural_points에서 수행됨)
-                        # if p3.get('type') != 'js_peak':
-                        #     logger.debug(f"[{log_date}] Skip IHS creation: P3 is not js_peak (type={p3.get('type')}). Awaiting future js_peak.")
-                        #     return
-
                         if not any(isinstance(d, InverseHeadAndShouldersDetector) and d.V1 and d.V1.get('index') == v1.get('index') for d in self.active_detectors):
                             v1_date_str = v1.get('actual_date', pd.Timestamp('NaT')).strftime('%y%m%d') if isinstance(v1.get('actual_date'), pd.Timestamp) else 'N/A'
                             logger.info(f"[{log_date}] IH&S 패턴 후보 감지. V1={v1_date_str}, Completion Mode='{completion_mode}'")

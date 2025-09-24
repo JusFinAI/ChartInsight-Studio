@@ -1,0 +1,170 @@
+{
+  "005930": {
+    "code": "005930",
+    "name": "삼성전자",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "000660": {
+    "code": "000660",
+    "name": "SK하이닉스",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "373220": {
+    "code": "373220",
+    "name": "LG에너지솔루션",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "005380": {
+    "code": "005380",
+    "name": "현대차",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "000270": {
+    "code": "000270",
+    "name": "기아",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "035420": {
+    "code": "035420",
+    "name": "NAVER",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "035720": {
+    "code": "035720",
+    "name": "카카오",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "207940": {
+    "code": "207940",
+    "name": "삼성바이오로직스",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "068270": {
+    "code": "068270",
+    "name": "셀트리온",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "005490": {
+    "code": "005490",
+    "name": "POSCO홀딩스",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "051910": {
+    "code": "051910",
+    "name": "LG화학",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "105560": {
+    "code": "105560",
+    "name": "KB금융",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "055550": {
+    "code": "055550",
+    "name": "신한지주",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "006400": {
+    "code": "006400",
+    "name": "삼성SDI",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "012330": {
+    "code": "012330",
+    "name": "현대모비스",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "015760": {
+    "code": "015760",
+    "name": "한국전력",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "096770": {
+    "code": "096770",
+    "name": "SK이노베이션",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "323410": {
+    "code": "323410",
+    "name": "카카오뱅크",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "028260": {
+    "code": "028260",
+    "name": "삼성물산",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "033780": {
+    "code": "033780",
+    "name": "KT&G",
+    "market": "KOSPI",
+    "auditInfo": "정상"
+  },
+  "247540": {
+    "code": "247540",
+    "name": "에코프로비엠",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "028300": {
+    "code": "028300",
+    "name": "HLB",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "263750": {
+    "code": "263750",
+    "name": "펄어비스",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "293490": {
+    "code": "293490",
+    "name": "카카오게임즈",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "058470": {
+    "code": "058470",
+    "name": "리노공업",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "041510": {
+    "code": "041510",
+    "name": "에스엠",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "035900": {
+    "code": "035900",
+    "name": "JYP Ent.",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  },
+  "112040": {
+    "code": "112040",
+    "name": "위메이드",
+    "market": "KOSDAQ",
+    "auditInfo": "정상"
+  }
+}

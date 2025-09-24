@@ -104,7 +104,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
             logger.error(f"데이터 인덱싱 오류: index={i}")
             continue
         
-        if current_date.date() == pd.Timestamp('2025-03-21').date():
+        if current_date.date() == pd.Timestamp('2025-05-12').date():
             logger.debug(f"디버그 날짜: {current_date.strftime('%Y-%m-%d')}")
 
 
@@ -120,20 +120,22 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
         # 3. 신규 패턴 감지기 생성 시도 (극점 타입 확인 로직 포함)
         new_extremum = detector.newly_registered_peak or detector.newly_registered_valley
         if new_extremum:
-            # H&S/IHS는 모든 새로운 극점 발생 시 확인 시도
-            # 참고: check_for_hs_ihs_start 내부에서 completion_mode 인자를 받거나 수정 필요
+            # H&S/IHS는 구조적 복잡성을 고려하여 모든 새로운 극점 발생 시 재탐색
             manager.check_for_hs_ihs_start(
                 detector.js_peaks + detector.secondary_peaks,
                 detector.js_valleys + detector.secondary_valleys
-                # completion_mode='neckline' # 필요시 명시적 전달
             )
 
-            # DT/DB는 JS 타입 극점일 때만 확인 시도
-            extremum_type = new_extremum.get('type', '') # 극점 생성 시 'type' 필드 추가 가정
-            if detector.newly_registered_peak and extremum_type == 'js_peak':
-                manager.add_detector("DT", detector.newly_registered_peak, data, detector.js_peaks, detector.js_valleys)
-            if detector.newly_registered_valley and extremum_type == 'js_valley':
-                manager.add_detector("DB", detector.newly_registered_valley, data, detector.js_peaks, detector.js_valleys)
+            # DT/DB는 'confirmed' 또는 'provisional' 신뢰도 등급을 시작점으로 허용
+            confidence = new_extremum.get('confidence', '') if isinstance(new_extremum, dict) else ''
+            if confidence in ['confirmed', 'provisional']:
+                all_peaks = detector.js_peaks + detector.secondary_peaks
+                all_valleys = detector.js_valleys + detector.secondary_valleys
+
+                if detector.newly_registered_peak:
+                    manager.add_detector("DT", detector.newly_registered_peak, data, all_peaks, all_valleys)
+                if detector.newly_registered_valley:
+                    manager.add_detector("DB", detector.newly_registered_valley, data, all_peaks, all_valleys)
     # --- 루프 종료 ---
 
     detector.finalize(data)
@@ -154,9 +156,132 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
         "volume": data['Volume'].tolist() if 'Volume' in data.columns else [0.0] * len(data) # float 처리
     }
 
-    # ZigZag 포인트 생성 (V030 방식)
+    # --- ✨ 신뢰도 기반 Zigzag 정제 헬퍼 함수 추가 ✨ ---
+    def create_alternating_zigzag(points: List[Dict], min_delta_pct: float = 0.005) -> List[Dict]:
+        """
+        'JS 뼈대 우선 방식'으로 최종 지그재그 리스트를 생성합니다.
+        연속된 JS 극점 사이를 가장 적합한 Secondary 극점으로 연결하여 재구성합니다.
+        """
+        logger = logging.getLogger(__name__)
+        if not points:
+            return []
+
+        def find_best_intermediate_point(candidates: List[Dict], point_type: str) -> Optional[Dict]:
+            if not candidates:
+                return None
+            conf_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
+            def score(p):
+                c = conf_map.get(p.get('confidence', 'base'), 1)
+                v = float(p.get('value', 0) or 0)
+                price_score = v if point_type == 'peak' else -v
+                return (c, price_score)
+            return max(candidates, key=score)
+
+        # 0단계: 정렬
+        sorted_points = sorted(points, key=lambda p: p.get('index', -1))
+        skeleton_points = [p for p in sorted_points if str(p.get('type', '')).startswith('js')]
+        secondary_points = [p for p in sorted_points if not str(p.get('type', '')).startswith('js')]
+
+        # 폴백: JS 뼈대가 없으면 기존 방식으로 처리
+        if not skeleton_points:
+            logger.warning("JS 뼈대가 없어 기존 방식으로 Zigzag를 정제합니다.")
+            conf_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
+            clean = [sorted_points[0].copy()]
+            for cur in sorted_points[1:]:
+                cur_type = 'peak' if cur.get('type','').endswith('peak') else 'valley'
+                last = clean[-1]
+                last_type = 'peak' if last.get('type','').endswith('peak') else 'valley'
+                if cur_type != last_type:
+                    clean.append(cur.copy()); continue
+                cur_conf = conf_map.get(cur.get('confidence','base'),1)
+                last_conf = conf_map.get(last.get('confidence','base'),1)
+                try:
+                    cur_val = float(cur.get('value'))
+                    last_val = float(last.get('value'))
+                except Exception:
+                    continue
+                if cur_conf > last_conf:
+                    clean[-1] = cur.copy()
+                elif cur_conf == last_conf:
+                    replace = False
+                    if cur_type == 'peak':
+                        if (cur_val - last_val) / max(1.0, abs(last_val)) > min_delta_pct: replace = True
+                    else:
+                        if (last_val - cur_val) / max(1.0, abs(last_val)) > min_delta_pct: replace = True
+                    if replace: clean[-1] = cur.copy()
+            logger.info(f"Zigzag 정제(Fallback): {len(sorted_points)}개 -> {len(clean)}개")
+            return clean
+
+        # 2단계: 뼈대 재구성 — 삭제하지 않고 연결하기
+        final_zigzag: List[Dict] = [skeleton_points[0]]
+        for i in range(1, len(skeleton_points)):
+            prev_bone = final_zigzag[-1]
+            curr_bone = skeleton_points[i]
+
+            prev_type = 'peak' if 'peak' in prev_bone.get('type', '') else 'valley'
+            curr_type = 'peak' if 'peak' in curr_bone.get('type', '') else 'valley'
+
+            if prev_type != curr_type:
+                final_zigzag.append(curr_bone)
+                continue
+
+            # 같은 타입(P-P 또는 V-V)
+            start_idx = int(prev_bone.get('index', -1))
+            end_idx = int(curr_bone.get('index', -1))
+            flesh_type_to_find = 'peak' if prev_type == 'valley' else 'valley'
+
+            candidates = [
+                p for p in secondary_points
+                if start_idx < int(p.get('index', -1)) < end_idx and flesh_type_to_find in p.get('type','')
+            ]
+
+            best_flesh_point = find_best_intermediate_point(candidates, flesh_type_to_find)
+            if best_flesh_point:
+                final_zigzag.append(best_flesh_point)
+                logger.info(f"뼈대 {prev_type}({start_idx})-{curr_type}({end_idx}) 사이를 {flesh_type_to_find}({best_flesh_point.get('index')})로 연결")
+            else:
+                # 적절한 살이 없으면 이는 논리적 오류로 간주하고 즉시 실패를 알린다.
+                candidate_indices = [int(p.get('index', -1)) for p in candidates]
+                error_msg = (
+                    f"논리적 오류: JS {prev_type} (Idx: {start_idx})와 JS {curr_type} (Idx: {end_idx}) 사이에서 "
+                    f"필수적인 {flesh_type_to_find}를 찾지 못했습니다. 후보 인덱스: {candidate_indices}"
+                )
+                logger.info(error_msg)
+                raise ValueError(error_msg)
+
+            # 현재 뼈대 추가(교체가 일어나지 않았다면 append)
+            if final_zigzag[-1].get('index') != curr_bone.get('index'):
+                final_zigzag.append(curr_bone)
+
+        logger.info(f"Zigzag 정제(Skeleton-First-Reconstruct): {len(sorted_points)}개 -> {len(final_zigzag)}개")
+        return final_zigzag
+    # --- 헬퍼 끝 ---
+
+    # ZigZag 포인트 생성 (V030 방식) - 신뢰도 기반 정제 적용
     all_points = detector.js_peaks + detector.js_valleys + detector.secondary_peaks + detector.secondary_valleys
-    zigzag_points = sorted(all_points, key=lambda x: x.get('index', -1))
+
+    # --- ✨ 안전검증: all_points 정규화 및 필드 검증 (Cursor.AI 제안 기반) ✨ ---
+    clean_points: List[Dict] = []
+    missing_key_examples: List[str] = []
+    for p in all_points:
+        if not isinstance(p, dict):
+            continue
+        # 필수 키(index, type, value) 확인
+        if not all(key in p for key in ['index', 'type', 'value']):
+            missing_key_examples.append(f"Idx:{p.get('index', 'N/A')}, Type:{p.get('type', 'N/A')}")
+            continue
+        # confidence 키가 없으면 'base'로 기본값 설정
+        if 'confidence' not in p:
+            p['confidence'] = 'base'
+        clean_points.append(p)
+
+    if missing_key_examples:
+        logger.warning(f"Zigzag 생성 전 필수 키가 누락된 {len(missing_key_examples)}개의 극점을 필터링했습니다. 예시: {missing_key_examples[:3]}")
+
+    all_points = clean_points
+    # --- ✨ 안전검증 끝 ✨ ---
+
+    zigzag_points = create_alternating_zigzag(all_points)
 
 
     analysis_results = {
