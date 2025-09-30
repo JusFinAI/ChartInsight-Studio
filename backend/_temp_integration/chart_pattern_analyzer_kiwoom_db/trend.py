@@ -3,7 +3,8 @@ import pandas as pd
 import logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-logger = logging.getLogger(__name__)
+# 공통 백엔드 로거 사용 (main_dashboard.py에서 backend_events.log로 설정됨)
+logger = logging.getLogger('backend')
 
 @dataclass
 class MarketTrendInfo:
@@ -285,6 +286,10 @@ class TrendDetector:
         return max(prior_extremums, key=lambda x: x['index'])
     # -----------------------------------------
     def register_js_peak(self, index: int, value: float, actual_date: pd.Timestamp, detected_date: pd.Timestamp, data: pd.DataFrame):
+
+        if actual_date is None:
+            self.log_event(detected_date, f"actual_date is None", "INFO")
+        
         """JS Peak 등록 (소급 승격 로직 포함)"""
         # 소급 승격 로직: 시간적 범위를 명확히 제한하여 미래 사건이 과거 승격에 영향을 주지 않도록 함
         if self.secondary_search_state == 'TRACKING_VALLEY' and self.candidate_extremum:
@@ -340,6 +345,7 @@ class TrendDetector:
             'open': actual_candle['Open'], 'high': actual_candle['High'],
             'low': actual_candle['Low'], 'close': actual_candle['Close']
         }
+         
         if not any(p['index'] == index for p in self.js_peaks):
             self.js_peaks.append(new_peak)
             self.newly_registered_peak = new_peak
@@ -365,6 +371,9 @@ class TrendDetector:
 
 
     def register_js_valley(self, index: int, value: float, actual_date: pd.Timestamp, detected_date: pd.Timestamp, data: pd.DataFrame):
+        if actual_date is None:
+            self.log_event(detected_date, f"actual_date is None", "INFO")
+            
         """JS Valley 등록 (소급 승격 로직 포함)"""
         # 소급 승격 로직: 시간적 범위를 명확히 제한하여 미래 사건이 과거 승격에 영향을 주지 않도록 함
         if self.secondary_search_state == 'TRACKING_PEAK' and self.candidate_extremum:
@@ -716,7 +725,7 @@ class TrendDetector:
 
         if base_extremums:
             # 디버그/테스트 시 로그 레벨을 쉽게 바꿀 수 있도록 로컬 변수로 분리
-            log_level = "INFO"  # 필요 시 "INFO"로 변경하여 1등급 발견 로그를 보이게 할 수 있음
+            log_level = "DEBUG"  # 필요 시 "INFO"로 변경하여 1등급 발견 로그를 보이게 할 수 있음
             for base_extremum in base_extremums:
                 # 로그에 인덱스 정보를 추가하여 디버깅 시 위치를 바로 파악할 수 있도록 함
                 be_idx = base_extremum.get('index', 'N/A')

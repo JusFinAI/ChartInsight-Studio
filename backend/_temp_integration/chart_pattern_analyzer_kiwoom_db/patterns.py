@@ -9,11 +9,20 @@ logger = logging.getLogger('backend')
 
 class PatternDetector:
     """DT/DB/HS/IHS 패턴 감지기 기본 클래스"""
-    def __init__(self, first_extremum, data, peaks=None, valleys=None): # 기본 생성자 단순화
+    def __init__(self, first_extremum, data, creation_event_date: pd.Timestamp = None, peaks=None, valleys=None):
+        # 패턴 메타
+        if not hasattr(self, 'pattern_type') or not self.pattern_type:
+            self.pattern_type = "Unknown"
+        self.first_extremum = first_extremum
+
+        # 감지기 생성 일자/ID
+        self.detector_creation_date = creation_event_date if creation_event_date is not None else pd.Timestamp.now()
+        start_date_str = self.first_extremum['actual_date'].strftime('%y%m%d') if self.first_extremum and 'actual_date' in self.first_extremum else 'NO_DATE'
+        self.detector_id = f"[{self.pattern_type}-{start_date_str}]"
+
+        # 상태
         self.expectation_mode = True
         self.stage = "Initial" # 초기 상태는 Initial로 통일
-        self.first_extremum = first_extremum # 패턴 시작 극점 (P1 또는 V1)
-        self.pattern_type = "Unknown"
         self.data = data
         self.peaks = peaks if peaks is not None else [] # 전체 Peak 리스트 참조
         self.valleys = valleys if valleys is not None else [] # 전체 Valley 리스트 참조
@@ -38,422 +47,239 @@ class PatternDetector:
     def reset(self, reason=""):
         self.expectation_mode = False
         self.stage = "Failed"
-        # 로그 출력 시점에 first_extremum이 있는지 확인
-        current_date = pd.Timestamp.now()
-        if self.first_extremum and 'detected_date' in self.first_extremum:
-            actual_date_str = self.first_extremum['actual_date'].strftime('%Y-%m-%d') if 'actual_date' in self.first_extremum else 'N/A'
-            logger.info(
-                f"[{current_date.strftime('%Y-%m-%d')}] [{self.pattern_type}-{self.first_extremum['actual_date'].strftime('%y%m%d')}] 감지기 리셋: 이유={reason} (감지기생성일: {self.first_extremum['detected_date'].strftime('%Y-%m-%d')})"
-            )
-        else:
-            logger.info(f"[{current_date.strftime('%Y-%m-%d')}] [{self.pattern_type}] 감지기 리셋: 이유={reason}")
+        self.log_event(f"감지기 리셋: 이유={reason}", "INFO")
 
     def is_complete(self):
         return self.stage == "Completed"
 
+
     def is_failed(self):
         return self.stage == "Failed"
 
-    def log_event(self, message, level="DEBUG", current_date=None): # 현재 처리 중인 날짜 파라미터 추가
+    def log_event(self, message: str, level: str = "DEBUG", current_date: Optional[pd.Timestamp] = None):
         if current_date is None:
-            # 현재 날짜 정보가 없으면 패턴 감지기 생성 날짜 사용
-            if self.candle_history and 'date' in self.candle_history[-1]:
-                current_date = self.candle_history[-1]['date']
-            else:
-                current_date = pd.Timestamp.now()
-                
-        if self.first_extremum and 'detected_date' in self.first_extremum and 'actual_date' in self.first_extremum:
-            pattern_start_date = self.first_extremum['actual_date'].strftime('%y%m%d') if isinstance(self.first_extremum['actual_date'], pd.Timestamp) else 'N/A'
-            detector_creation_date = self.first_extremum['detected_date'].strftime('%Y-%m-%d')
-            
-            # 현재 날짜를 맨 앞에 표시하고 패턴 정보와 감지기 생성일 추가
-            log_msg = f"[{current_date.strftime('%Y-%m-%d')}] [{self.pattern_type}-{pattern_start_date}] {message} (감지기생성일: {detector_creation_date})"
-            logger.log(getattr(logging, level.upper()), log_msg)
-        else:
-            # 기본 정보가 없는 경우 간단한 형식 사용
-            current_date_str = current_date.strftime('%Y-%m-%d') if isinstance(current_date, pd.Timestamp) else str(current_date)
-            logger.log(getattr(logging, level.upper()), f"[{current_date_str}] [{self.pattern_type}] {message}")
+            # current_date가 없으면 이벤트 발생일을 감지기 생성일로 간주
+            current_date = self.detector_creation_date
+
+        creation_date_str = self.detector_creation_date.strftime('%Y-%m-%d')
+        current_date_str = current_date.strftime('%Y-%m-%d') if isinstance(current_date, pd.Timestamp) else str(current_date)
+
+        log_msg = f"[{current_date_str}] {self.detector_id} {message} (감지기생성일: {creation_date_str})"
+        log_func = getattr(logger, level.lower(), logger.info)
+        log_func(log_msg)
 
 class HeadAndShouldersDetector(PatternDetector):
     """Head and Shoulders 패턴 감지기 (수정 V4 - 규칙 변경 및 옵션 추가)"""
-    def __init__(self, p1, data, peaks=None, valleys=None, completion_mode='aggressive'): # completion_mode 파라미터 추가
-        super().__init__(p1, data, peaks, valleys)
+    def __init__(self, p1, data, creation_event_date: pd.Timestamp = None, peaks=None, valleys=None, completion_mode='aggressive', structural_points: dict = None, initial_stage: Optional[str] = None):
         self.pattern_type = "HS"
-        self.P1 = p1 # Left Shoulder Peak
-        self.completion_mode = completion_mode # 옵션 저장
-        self.stage = "LeftShoulderPeakDetected" # Stage 1
-        
-# HeadAndShouldersDetector 클래스 내
-    def update(self, candle, newly_registered_peak=None, newly_registered_valley=None):
-        """H&S 패턴 상태 업데이트 (수정 V4 - 검증 규칙 변경 및 완성 옵션 적용)"""
-        if not self.expectation_mode: return
+        super().__init__(p1, data, creation_event_date, peaks, valleys)
+        # 안전한 포인트 초기화
+        self.P1 = None; self.V1 = None; self.P2 = None; self.V2 = None; self.P3 = None; self.V3 = None
+        self.P1 = p1
+        self.completion_mode = completion_mode
+        self.stage = initial_stage if initial_stage is not None else "AwaitingCompletion"
 
-        current_date = candle['date']
+        # structural_points가 주어지면 안전히 할당
+        if structural_points and isinstance(structural_points, dict):
+            for k in ['P1','V1','P2','V2','P3','V3']:
+                if k in structural_points:
+                    setattr(self, k, structural_points.get(k))
+
+    def update(self, candle, newly_registered_peak=None, newly_registered_valley=None):
+        """간소화된 H&S update:
+        - 구조 검증/실시간 P3 탐지는 manager에서 수행한다고 가정
+        - 감지기는 치명적 구조 붕괴 리셋과 AwaitingCompletion에서의 완성 판정만 수행
+        """
+        if not self.expectation_mode:
+            return
+
+        # 입력 유효성 검사
+        if not isinstance(candle, dict) or not all(k in candle for k in ['date','Close','Open','High','Low']):
+            self.log_event("오류: update에 전달된 candle 객체 불완전", "ERROR")
+            return
+
+        self.candle_history.append(candle)
         current_close = candle['Close']
         current_high = candle['High']
         current_low = candle['Low']
 
-        # Stage 1 리셋: V2 감지 전 P1 고점 상회 (`현재 High > P1['value']`).
-        if self.P1 and current_high > self.P1['value'] and self.stage == "LeftShoulderPeakDetected": 
-            self.log_event(f"리셋 (Stage 1): 현재 High({current_high:.0f}) > P1({self.P1['value']:.0f})", "INFO"); 
-            self.reset("P1 고점 상회"); 
-            return
-        #Stage 2 리셋: P2 감지 전 V2 저점 하회 (`현재 Close < V2['value']`).
-        if self.V2 and current_close < self.V2['value'] and self.stage == "LeftNecklineValleyDetected": 
-            self.log_event(f"리셋 (Stage 2): 현재 Close({current_close:.0f}) < V2({self.V2['value']:.0f})", "INFO"); 
-            self.reset("V2 저점 하회"); 
-            return
-        # P2(머리) 고점 돌파 리셋: P2 형성 후 ~ 완성 전까지 모든 단계에서 확인
-        if self.P2 and current_high > self.P2['value'] and self.stage in ["HeadPeakDetected", "RightNecklineValleyDetected", "AwaitingCompletion"]:
-            self.log_event(f"리셋 (Stage {self.stage}): 현재 High({current_high:.0f}) > P2({self.P2['value']:.0f})", "INFO"); 
-            self.reset("머리 고점 상회"); 
-            return
-        # V2(왼쪽 넥라인) 저점 돌파 리셋: V3/P3 형성 중 또는 완성 대기 중
-        if self.V2 and current_close < self.V2['value'] and self.stage in ["RightNecklineValleyDetected", "AwaitingCompletion"]:
-            self.log_event(f"리셋 (Stage {self.stage}): 현재 Close({current_close:.0f}) < V2({self.V2['value']:.0f})", "INFO"); self.reset("V3/P3 형성 또는 완성 대기 중 V2 하회"); return
-        # P3(오른쪽 어깨) 고점 돌파 리셋: P3 형성 후 완성 대기 중
-        if self.P3 and current_close > self.P3['value'] and self.stage == "AwaitingCompletion":
-            self.log_event(f"리셋 (Stage AwaitingCompletion): 현재 Close({current_close:.0f}) > P3({self.P3['value']:.0f})", "INFO"); self.reset("완성 전 P3 상회"); return
-        # ---------------------
-
-        # --- 상태별 로직 진행 ---
-        if self.stage == "LeftShoulderPeakDetected": # Stage 1: V2 찾기
-            if newly_registered_valley and newly_registered_valley['index'] > self.P1['index']:
-                self.V2 = newly_registered_valley
-                self.stage = "LeftNecklineValleyDetected" # Stage 2
-                # self.log_event(f"Stage 1 -> 2: V2 감지 {self.V2['actual_date'].strftime('%y%m%d')}({self.V2['value']:.0f})")
-
-        elif self.stage == "LeftNecklineValleyDetected": # Stage 2: P2 찾기
-            if newly_registered_peak and newly_registered_peak['index'] > self.V2['index']:
-                # P2 > P1 조건은 Manager에서 검증했지만, 여기서 다시 확인 가능 (선택사항)
-                if newly_registered_peak['value'] > self.P1['value']:
-                    self.P2 = newly_registered_peak
-                    self.stage = "HeadPeakDetected" # Stage 3
-                    # self.log_event(f"Stage 2 -> 3: P2(머리) 감지 {self.P2['actual_date'].strftime('%y%m%d')}({self.P2['value']:.0f})")
-                # else: self.reset("Internal Error: P2 <= P1"); return # 필요시 리셋
-
-        elif self.stage == "HeadPeakDetected": # Stage 3: V3 찾기
-            if newly_registered_valley and newly_registered_valley['index'] > self.P2['index']:
-                self.V3 = newly_registered_valley
-                self.stage = "RightNecklineValleyDetected" # Stage 4
-                # self.log_event(f"Stage 3 -> 4: V3 감지 {self.V3['actual_date'].strftime('%y%m%d')}({self.V3['value']:.0f})")
-                # V3 vs V2 몸통 검증 제거됨
-
-        elif self.stage == "RightNecklineValleyDetected": # Stage 4: P3 찾기 및 검증 (균형/대칭 규칙 적용)
-            if newly_registered_peak and newly_registered_peak['index'] > self.V3['index']:
-                potential_p3 = newly_registered_peak
-                self.log_event(f"Stage 4: P3 후보 발견 {potential_p3['actual_date'].strftime('%y%m%d')}({potential_p3['value']:.0f}). 검증 시작.", "DEBUG")
-
-                # 개발 모드: P3는 오직 JS Peak(js_peak)만 허용하도록 함 (secondary 지연 문제 완화)
-                # non-js 후보는 무시하고 다음 이벤트를 기다림
-                if potential_p3.get('type') != 'js_peak':
-                    self.log_event(f"무시: P3 후보 타입이 js_peak 아님 (type={potential_p3.get('type')})", "DEBUG")
-                    return
-
-                # --- 검증 규칙 적용 ---
-                p3_valid = True # 검증 통과 여부 플래그
-
-                # 검증 0: P3 < P2 (기본 조건)
-                if not (potential_p3.get('value', np.inf) < self.P2.get('value', -np.inf)):
-                    p3_valid = False; self.log_event(f"  - P3 후보 검증 실패: P3({potential_p3.get('value'):.0f}) >= P2({self.P2.get('value'):.0f})", "DEBUG")
-
-                # 필요한 데이터 준비 (종가 기준)
-                if p3_valid: # 기본 조건 통과 시에만 추가 검증
-                    try:
-                        p1_val = self.data.loc[self.P1['actual_date'], 'High']
-                        v2_val = self.data.loc[self.V2['actual_date'], 'Low']
-                        p2_val = self.data.loc[self.P2['actual_date'], 'High']
-                        v3_val = self.data.loc[self.V3['actual_date'], 'Low']
-                        p3_val = self.data.loc[potential_p3['actual_date'], 'High'] # P3 값은 후보 캔들의 종가 사용
-                        p3_idx = potential_p3['index']; p2_idx = self.P2['index']; p1_idx = self.P1['index']
-                        v3_idx = self.V3['index']; v2_idx = self.V2['index'] # 균형 규칙 위해 추가
-
-                    except KeyError as e:
-                        self.log_event(f"오류: 검증 위한 가격 데이터 접근 실패 (날짜={e})", "ERROR"); self.reset("Data access error"); return
-                    except Exception as e:
-                        self.log_event(f"오류: 검증 데이터 준비 중 오류: {e}", "ERROR"); self.reset("Data prep error"); return
-
-                    # 검증 1: 균형 규칙 (Balance Rule)
-                    r_midpoint = 0.5 * (p3_val + v3_val)
-                    l_midpoint = 0.5 * (p1_val + v2_val)
-                    if p1_val < r_midpoint or p3_val < l_midpoint:
-                        p3_valid = False
-                        self.log_event(f"  - P3 후보 검증 실패: 균형 규칙 위반 (P1={p1_val:.0f} vs R_Mid={r_midpoint:.0f} or P3={p3_val:.0f} vs L_Mid={l_midpoint:.0f})", "DEBUG")
-
-                    # 검증 2: 대칭 규칙 (Symmetry Rule)
-                    if p3_valid and p3_idx > p2_idx and p2_idx > p1_idx: # 시간 순서 및 이전 검증 통과 확인
-                        r_to_h_time = p3_idx - p2_idx
-                        l_to_h_time = p2_idx - p1_idx
-                        if r_to_h_time <= 0 or l_to_h_time <= 0: # 시간 차이가 0 이하인 경우 제외
-                            p3_valid = False
-                            self.log_event("  - P3 후보 검증 실패: 대칭 규칙 시간 계산 오류 (시간 차이 <= 0)", "WARNING")
-                        elif r_to_h_time > 2.5 * l_to_h_time or l_to_h_time > 2.5 * r_to_h_time:
-                            p3_valid = False
-                            self.log_event(f"  - P3 후보 검증 실패: 대칭 규칙 위반 (L->H={l_to_h_time}, H->R={r_to_h_time})", "DEBUG")
-                    elif p3_valid: # 시간 순서 오류
-                        p3_valid = False
-                        self.log_event("  - P3 후보 검증 실패: 대칭 규칙 시간 계산 오류 (인덱스 순서 오류)", "WARNING")
-
-
-                # 모든 검증 통과 시 P3 확정 및 상태 변경
-                if p3_valid:
-                    self.P3 = potential_p3 # P3 확정
-                    self.stage = "AwaitingCompletion" # Stage 5: 완성 조건 대기
-                    self.log_event(f"Stage 4 -> 5: P3 감지 및 검증 통과 {self.P3['actual_date'].strftime('%y%m%d')}({self.P3['value']:.0f}). 완성 조건 확인 시작.", "INFO")
-                # else: 검증 실패 시 아무것도 안하고 다음 Peak/Valley 이벤트 기다림
-
-        elif self.stage == "AwaitingCompletion": # Stage 5: 완성 조건 확인
-            # 현재 캔들의 인덱스 가져오기
+        # 최신 로직: 구조 검증은 탐색 단계에서 완료됨. 업데이트에서는 치명적 오류만 처리.
+        if self.stage == "AwaitingCompletion":
             try:
                 current_index_loc = self.data.index.get_loc(candle['date'])
-            except KeyError:
-                self.log_event(f"오류: 현재 캔들 날짜({candle['date']})를 self.data 인덱스에서 찾을 수 없음.", "ERROR")
-                self.reset("Internal data index error")
-                return
-
-            if current_index_loc <= 0: # 첫 캔들에 대한 비교 불가
-                self.log_event("경고: 직전 캔들 없어 완성 조건 확인 불가 (인덱스 0).", "WARNING"); return
-
-            prev_candle = self.data.iloc[current_index_loc - 1] # 직전 캔들
-
-            # 옵션별 완성 조건 확인
-            if self.completion_mode == 'aggressive':
-                # 조건: 음봉 마감 & 종가 < 직전 저점
-                if candle['Close'] < candle['Open'] and candle['Close'] < prev_candle['Low']:
-                    self.stage = "Completed"
-                    self.expectation_mode = False
-                    self.log_event(f"*** Head & Shoulders 패턴 완성! (Aggressive) *** Price={candle['Close']:.0f}, Prev Low={prev_candle['Low']:.0f}", "INFO")
-
-            elif self.completion_mode == 'neckline':
-                # 기울어진 넥라인 돌파 확인
-                if self.V2 and self.V3: # V2, V3 정보 필요
-                    try:
-                        v2_idx = self.V2['index']; v3_idx = self.V3['index']
-                        # 넥라인은 V2, V3의 Low 값을 기준으로 계산 (참고 코드와 약간 다름, Close 대신 Low 사용)
-                        v2_val = self.V2.get('value') # V2 Low 값
-                        v3_val = self.V3.get('value') # V3 Low 값
-
-                        if v2_val is None or v3_val is None:
-                             self.log_event("경고: 넥라인 계산 위한 V2 또는 V3 value 없음.", "WARNING"); return
-
-                        if v3_idx > v2_idx: # 시간 순서 확인
-                            neck_run = v3_idx - v2_idx
-                            neck_rise = v3_val - v2_val
-                            neck_slope = neck_rise / neck_run if neck_run != 0 else 0
-
-                            # 현재 시점(i)에서의 넥라인 값 계산
-                            current_i = current_index_loc
-                            # neck_val = v2_val + (current_i - v2_idx) * neck_slope
-                            # 좀 더 안정적인 계산을 위해 V3 기준에서 역산 또는 보간 사용 고려 가능
-                            # 단순 직선 가정: V2 가격 + 경과시간 * 기울기
-                            neck_val = v2_val + (current_i - v2_idx) * neck_slope
-
-
-                            # 돌파 확인: 현재 종가 <= 넥라인 값
-                            if candle['Close'] <= neck_val:
-                                self.stage = "Completed"
-                                self.expectation_mode = False
-                                self.neckline_level = neck_val # 완성 시점 넥라인 값 저장
-                                self.log_event(f"*** Head & Shoulders 패턴 완성! (Neckline Break) *** Price={candle['Close']:.0f}, Neckline={neck_val:.0f}, Slope={neck_slope:.2f}", "INFO")
-                        else:
-                            self.log_event("경고: 넥라인 계산 위한 V2/V3 인덱스 오류.", "WARNING")
-
-                    except KeyError as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 확인 중 가격 데이터 접근 실패 (키={e})", "ERROR")
-                    except TypeError as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 계산 중 타입 오류: {e}", "ERROR")
-                    except Exception as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 확인 중 예외 발생: {e}", "ERROR")
-                else:
-                    self.log_event("경고: 넥라인 완성 조건 확인 위한 V2 또는 V3 정보 부족.", "WARNING")
-
-# --- 신규: Inverse Head and Shoulders 감지기 클래스 ---
-class InverseHeadAndShouldersDetector(PatternDetector):
-    """Inverse Head and Shoulders 패턴 감지기 (수정 V4 - 규칙 변경 및 옵션 추가)"""
-    def __init__(self, v1, data, peaks=None, valleys=None, completion_mode='neckline'): # completion_mode 추가
-        super().__init__(v1, data, peaks, valleys)
-        self.pattern_type = "IHS"
-        self.V1 = v1 # Left Shoulder Valley
-        self.completion_mode = completion_mode # 옵션 저장
-        self.stage = "LeftShoulderValleyDetected" # Stage 1
-        self.log_event(f"Stage 0 -> 1: 감지기 생성 (V1={v1['actual_date'].strftime('%y%m%d')}@ {v1['value']:.0f})", "INFO")
-
-    def log_event(self, message, level="DEBUG"):
-        log_date = self.V1['detected_date'].strftime('%Y-%m-%d')
-        pattern_start_date = self.V1['actual_date'].strftime('%y%m%d')
-        logger.log(getattr(logging, level.upper()), f"[{log_date} / {self.pattern_type}-{pattern_start_date}] {message}")
-
-# InverseHeadAndShouldersDetector 클래스 내
-    def update(self, candle, newly_registered_peak=None, newly_registered_valley=None):
-        """IH&S 패턴 상태 업데이트 (수정 V4 - 검증 규칙 변경 및 완성 옵션 적용)"""
-        if not self.expectation_mode: return
-
-        current_date = candle['date']
-        current_close = candle['Close']
-        current_high = candle['High']
-        current_low = candle['Low']
-
-        # --- 리셋 조건 확인 (대칭 및 스테이지 이름 조정) ---
-        if self.V1 and current_low < self.V1['value'] and self.stage == "LeftShoulderValleyDetected":
-            self.log_event(f"리셋 (Stage 1): 현재 Low({current_low:.0f}) < V1({self.V1['value']:.0f})", "INFO"); self.reset("V1 저점 하회"); return
-        if self.P2_ihs and current_close > self.P2_ihs['value'] and self.stage == "LeftNecklinePeakDetected":
-            self.log_event(f"리셋 (Stage 2): 현재 Close({current_close:.0f}) > P2({self.P2_ihs['value']:.0f})", "INFO"); self.reset("P2 고점 상회"); return
-        # V2(머리) 저점 돌파 리셋: V2 형성 후 ~ 완성 전까지
-        if self.V2_ihs and current_low < self.V2_ihs['value'] and self.stage in ["HeadValleyDetected", "RightNecklinePeakDetected", "AwaitingCompletion"]:
-            self.log_event(f"리셋 (Stage {self.stage}): 현재 Low({current_low:.0f}) < V2({self.V2_ihs['value']:.0f})", "INFO"); self.reset("머리 저점 하회"); return
-        # P3(오른쪽 넥라인) 형성 중 P2 고점 상회 시 리셋
-        if self.P2_ihs and current_close > self.P2_ihs['value'] and self.stage in ["RightNecklinePeakDetected", "AwaitingCompletion"]:
-            self.log_event(f"리셋 (Stage {self.stage}): 현재 Close({current_close:.0f}) > P2({self.P2_ihs['value']:.0f})", "INFO"); self.reset("V3/P3 형성 또는 완성 대기 중 P2 상회"); return
-        # V3(오른쪽 어깨) 저점 돌파 리셋: V3 형성 후 완성 대기 중
-        if self.V3_ihs and current_close < self.V3_ihs['value'] and self.stage == "AwaitingCompletion":
-            self.log_event(f"리셋 (Stage AwaitingCompletion): 현재 Close({current_close:.0f}) < V3({self.V3_ihs['value']:.0f})", "INFO"); self.reset("완성 전 V3 하회"); return
-        # ---------------------
-
-        # --- 상태별 로직 진행 (대칭) ---
-        if self.stage == "LeftShoulderValleyDetected": # Stage 1: P2 찾기
-            if newly_registered_peak and newly_registered_peak['index'] > self.V1['index']:
-                self.P2_ihs = newly_registered_peak
-                self.stage = "LeftNecklinePeakDetected" # Stage 2
-                # self.log_event(f"Stage 1 -> 2: P2 후보 감지 {self.P2_ihs['actual_date'].strftime('%y%m%d')}({self.P2_ihs['value']:.0f})")
-
-        elif self.stage == "LeftNecklinePeakDetected": # Stage 2: V2 찾기
-            if newly_registered_valley and newly_registered_valley['index'] > self.P2_ihs['index']:
-                if newly_registered_valley['value'] < self.V1['value']:
-                    self.V2_ihs = newly_registered_valley
-                    self.stage = "HeadValleyDetected" # Stage 3
-                    # self.log_event(f"Stage 2 -> 3: V2(머리) 감지 {self.V2_ihs['actual_date'].strftime('%y%m%d')}({self.V2_ihs['value']:.0f})")
-                # else: self.reset("Internal Error: V2 >= V1"); return
-
-        elif self.stage == "HeadValleyDetected": # Stage 3: P3 찾기
-            if newly_registered_peak and newly_registered_peak['index'] > self.V2_ihs['index']:
-                self.P3_ihs = newly_registered_peak
-                self.stage = "RightNecklinePeakDetected" # Stage 4
-                # self.log_event(f"Stage 3 -> 4: P3 감지 {self.P3_ihs['actual_date'].strftime('%y%m%d')}({self.P3_ihs['value']:.0f})")
-                # P3 vs P2 몸통 검증 제거됨
-
-        elif self.stage == "RightNecklinePeakDetected": # Stage 4: V3 찾기 및 검증 (균형/대칭 규칙 적용)
-            if newly_registered_valley and newly_registered_valley['index'] > self.P3_ihs['index']:
-                potential_v3 = newly_registered_valley
-                self.log_event(f"Stage 4: V3 후보 발견 {potential_v3['actual_date'].strftime('%y%m%d')}({potential_v3['value']:.0f}). 검증 시작.", "DEBUG")
-
-                # 개발 모드: V3는 오직 JS Valley(js_valley)만 허용하도록 함 (secondary 지연 문제 완화)
-                # non-js 후보는 무시하고 다음 이벤트를 기다림
-                if potential_v3.get('type') != 'js_valley':
-                    self.log_event(f"무시: V3 후보 타입이 js_valley 아님 (type={potential_v3.get('type')})", "DEBUG")
-                    return
-
-                # --- 검증 규칙 적용 ---
-                v3_valid = True # 검증 통과 여부 플래그
-
-                # 검증 0: V3 > V2 (기본 조건)
-                if not (potential_v3.get('value', -np.inf) > self.V2_ihs.get('value', np.inf)):
-                    v3_valid = False; self.log_event(f"  - V3 후보 검증 실패: V3({potential_v3.get('value'):.0f}) <= V2({self.V2_ihs.get('value'):.0f})", "DEBUG")
-
-                # 필요한 데이터 준비 (종가 기준)
-                if v3_valid:
-                    try:
-                        v1_val = self.data.loc[self.V1['actual_date'], 'Low']
-                        p2_val = self.data.loc[self.P2_ihs['actual_date'], 'High']
-                        v2_val = self.data.loc[self.V2_ihs['actual_date'], 'Low']
-                        p3_val = self.data.loc[self.P3_ihs['actual_date'], 'High']
-                        v3_val = self.data.loc[potential_v3['actual_date'], 'Low']
-                        v3_idx = potential_v3['index']; v2_idx = self.V2_ihs['index']; v1_idx = self.V1['index']
-                        p3_idx = self.P3_ihs['index']; p2_idx = self.P2_ihs['index'] # 균형 규칙 위해 추가
-
-                    except KeyError as e:
-                        self.log_event(f"오류: 검증 위한 가격 데이터 접근 실패 (날짜={e})", "ERROR"); self.reset("Data access error"); return
-                    except Exception as e:
-                        self.log_event(f"오류: 검증 데이터 준비 중 오류: {e}", "ERROR"); self.reset("Data prep error"); return
-
-                    # 검증 1: 균형 규칙 (Balance Rule - 대칭)
-                    r_midpoint = 0.5 * (v3_val + p3_val) # 오른쪽 어깨(V3)-겨드랑이(P3)
-                    l_midpoint = 0.5 * (v1_val + p2_val) # 왼쪽 어깨(V1)-겨드랑이(P2)
-                    if v1_val > r_midpoint or v3_val > l_midpoint:
-                        v3_valid = False
-                        self.log_event(f"  - V3 후보 검증 실패: 균형 규칙 위반 (V1={v1_val:.0f} vs R_Mid={r_midpoint:.0f} or V3={v3_val:.0f} vs L_Mid={l_midpoint:.0f})", "DEBUG")
-
-                    # 검증 2: 대칭 규칙 (Symmetry Rule - 대칭)
-                    if v3_valid and v3_idx > v2_idx and v2_idx > v1_idx:
-                        r_to_h_time = v3_idx - v2_idx
-                        l_to_h_time = v2_idx - v1_idx
-                        if r_to_h_time <= 0 or l_to_h_time <= 0:
-                            v3_valid = False
-                            self.log_event("  - V3 후보 검증 실패: 대칭 규칙 시간 계산 오류 (시간 차이 <= 0)", "WARNING")
-                        elif r_to_h_time > 2.5 * l_to_h_time or l_to_h_time > 2.5 * r_to_h_time:
-                            v3_valid = False
-                            self.log_event(f"  - V3 후보 검증 실패: 대칭 규칙 위반 (L->H={l_to_h_time}, H->R={r_to_h_time})", "DEBUG")
-                    elif v3_valid:
-                        v3_valid = False
-                        self.log_event("  - V3 후보 검증 실패: 대칭 규칙 시간 계산 오류 (인덱스 순서 오류)", "WARNING")
-
-                # 모든 검증 통과 시 V3 확정 및 상태 변경
-                if v3_valid:
-                    self.V3_ihs = potential_v3 # V3 확정
-                    self.stage = "AwaitingCompletion" # Stage 5
-                    self.log_event(f"Stage 4 -> 5: V3 감지 및 검증 통과 {self.V3_ihs['actual_date'].strftime('%y%m%d')}({self.V3_ihs['value']:.0f}). 완성 조건 확인 시작.", "INFO")
-                # else: 검증 실패 시 다음 Valley 후보 기다림
-
-        elif self.stage == "AwaitingCompletion": # Stage 5: 완성 조건 확인
-            # 현재 캔들의 인덱스 가져오기
-            try:
-                current_index_loc = self.data.index.get_loc(candle['date'])
-            except KeyError:
-                self.log_event(f"오류: 현재 캔들 날짜({candle['date']})를 self.data 인덱스에서 찾을 수 없음.", "ERROR")
+            except Exception:
+                self.log_event(f"오류: 현재 캔들 날짜를 self.data에서 찾을 수 없음 ({candle.get('date')})", "ERROR")
                 self.reset("Internal data index error")
                 return
 
             if current_index_loc <= 0:
-                self.log_event("경고: 직전 캔들 없어 완성 조건 확인 불가 (인덱스 0).", "WARNING"); return
+                self.log_event("직전 캔들 없음으로 완성 조건 확인 불가", "WARNING")
+                return
 
-            prev_candle = self.data.iloc[current_index_loc - 1] # 직전 캔들
+            prev_candle = self.data.iloc[current_index_loc - 1]
 
-            # 옵션별 완성 조건 확인
+            # 사후 무효화: V3 이후 Close > max(P1, P3) 발생 시 리셋 (동적 규칙)
+            try:
+                if getattr(self, 'V3', None) and getattr(self, 'P1', None) and getattr(self, 'P3', None):
+                    v3_idx = int(self.V3.get('index', -1))
+                    p1_val = self.P1.get('value')
+                    p3_val = self.P3.get('value')
+                    if p1_val is not None and p3_val is not None and v3_idx >= 0 and current_index_loc > v3_idx:
+                        invalidation_level = max(float(p1_val), float(p3_val))
+                        if candle['Close'] > invalidation_level:
+                            self.log_event(f"V3 이후 max(P1,P3) 상회(무효화): Level={invalidation_level:.0f}, Close={candle['Close']:.0f}", "WARNING")
+                            self.reset("V3 이후 max(P1,P3) 상회(무효화)")
+                            return
+            except Exception as e:
+                self.log_event(f"동적 무효화 검사 오류: {e}", "ERROR")
+                pass
+
             if self.completion_mode == 'aggressive':
-                # 조건: 양봉 마감 & 종가 > 직전 고점
+                if candle['Close'] < candle['Open'] and candle['Close'] < prev_candle['Low']:
+                    self.stage = "Completed"
+                    self.expectation_mode = False
+                    self.log_event(f"*** Head & Shoulders 패턴 완성! (Aggressive) *** Price={candle['Close']:.0f}", "INFO")
+                    return
+
+            elif self.completion_mode == 'neckline':
+                if getattr(self, 'V2', None) and getattr(self, 'V3', None):
+                    try:
+                        v2_idx = self.V2['index']; v3_idx = self.V3['index']
+                        v2_val = self.V2.get('value'); v3_val = self.V3.get('value')
+                        if v2_val is None or v3_val is None:
+                            self.log_event("넥라인 계산을 위한 V2/V3 값 누락", "WARNING")
+                            return
+                        if v3_idx > v2_idx:
+                            neck_run = v3_idx - v2_idx
+                            neck_rise = v3_val - v2_val
+                            neck_slope = neck_rise / neck_run if neck_run != 0 else 0
+                            current_i = current_index_loc
+                            neck_val = v2_val + (current_i - v2_idx) * neck_slope
+                            if candle['Close'] <= neck_val:
+                                self.stage = "Completed"
+                                self.expectation_mode = False
+                                self.neckline_level = neck_val
+                                self.log_event(f"*** Head & Shoulders 패턴 완성! (Neckline Break) *** Price={candle['Close']:.0f}, Neckline={neck_val:.0f}", "INFO")
+                                return
+                        else:
+                            self.log_event("넥라인 계산을 위한 V2/V3 인덱스 오류", "WARNING")
+                    except Exception as e:
+                        self.log_event(f"넥라인 완성 조건 확인 중 예외: {e}", "ERROR")
+                        return
+
+# --- 신규: Inverse Head and Shoulders 감지기 클래스 ---
+class InverseHeadAndShouldersDetector(PatternDetector):
+    """Inverse Head and Shoulders 패턴 감지기 (수정 V4 - 규칙 변경 및 옵션 추가)"""
+    def __init__(self, v1, data, creation_event_date: pd.Timestamp = None, peaks=None, valleys=None, completion_mode='neckline', structural_points: dict = None, initial_stage: Optional[str] = None):
+        self.pattern_type = "IHS"
+        super().__init__(v1, data, creation_event_date, peaks, valleys)
+        # 안전한 포인트 초기화 (IHS용 변수와 일반 변수 모두 준비)
+        self.P1_ihs = None; self.V1_ihs = None; self.P2_ihs = None; self.V2_ihs = None; self.P3_ihs = None; self.V3_ihs = None
+        self.P1 = None; self.V1 = None; self.P2 = None; self.V2 = None; self.P3 = None; self.V3 = None
+
+        # anchor (일반적으로 V1)를 기본으로 설정
+        self.V1 = v1
+        self.V1_ihs = v1
+        self.completion_mode = completion_mode
+        self.stage = initial_stage if initial_stage is not None else "AwaitingCompletion"
+
+        # structural_points가 주어지면 안전히 할당(대칭성 유지)
+        if structural_points and isinstance(structural_points, dict):
+            # IHS 키는 P1,V1,P2,V2,P3,V3 (IHS 시 매핑됨)
+            for k in ['P1','V1','P2','V2','P3','V3']:
+                if k in structural_points:
+                    # IHS 전용과 일반 명칭 모두에 할당
+                    setattr(self, f"{k}_ihs", structural_points.get(k))
+                    setattr(self, k, structural_points.get(k))
+        # 생성 로그 (간단히)
+        try:
+            self.log_event(f"Stage 0 -> 1: 감지기 생성 (V1={self.V1.get('actual_date').strftime('%y%m%d')}@ {self.V1.get('value', 0):.0f})", "INFO")
+        except Exception:
+            self.log_event("Stage 0 -> 1: IHS 감지기 생성", "INFO")
+
+    def update(self, candle, newly_registered_peak=None, newly_registered_valley=None):
+        """IHS update (간소화):
+        - 구조 검증 및 V3 탐지 로직 제거
+        - 치명적 붕괴 리셋과 AwaitingCompletion에서의 완성 조건만 처리
+        """
+        if not self.expectation_mode:
+            return
+
+        # 입력 검증
+        if not isinstance(candle, dict) or not all(k in candle for k in ['date', 'Close', 'Open', 'High', 'Low']):
+            self.log_event("오류: update에 전달된 candle 객체 불완전", "ERROR")
+            return
+
+        self.candle_history.append(candle)
+        current_close = candle['Close']
+        current_high = candle['High']
+        current_low = candle['Low']
+
+        # 최신 로직: 구조 검증은 탐색 단계에서 완료됨. 업데이트에서는 치명적 오류만 처리.
+        if self.stage == "AwaitingCompletion":
+            try:
+                current_index_loc = self.data.index.get_loc(candle['date'])
+            except Exception:
+                self.log_event(f"오류: 현재 캔들 날짜를 데이터 인덱스에서 찾을 수 없음 ({candle['date']})", "ERROR")
+                self.reset("Internal data index error")
+                return
+
+            if current_index_loc <= 0:
+                self.log_event("직전 캔들 없음으로 완성 조건 확인 불가", "WARNING")
+                return
+
+            prev_candle = self.data.iloc[current_index_loc - 1]
+
+            # 사후 무효화: P3 이후 Close < min(V1, V3) 발생 시 리셋 (동적 규칙, min 사용)
+            try:
+                if getattr(self, 'P3_ihs', None) and getattr(self, 'V1_ihs', None) and getattr(self, 'V3_ihs', None):
+                    p3_idx = int(self.P3_ihs.get('index', -1))
+                    v1_val = self.V1_ihs.get('value')
+                    v3_val = self.V3_ihs.get('value')
+                    if v1_val is not None and v3_val is not None and p3_idx >= 0 and current_index_loc > p3_idx:
+                        # [수정!] 동적 무효화 기준선은 두 어깨 저점 중 '더 낮은' 값
+                        invalidation_level = min(float(v1_val), float(v3_val))
+                        if candle['Close'] < invalidation_level:
+                            self.log_event(f"P3 이후 min(V1,V3) 하회(무효화): Level={invalidation_level:.0f}, Close={candle['Close']:.0f}", "WARNING")
+                            self.reset("P3 이후 min(V1,V3) 하회(무효화)")
+                            return
+            except Exception as e:
+                self.log_event(f"동적 무효화 검사 오류: {e}", "ERROR")
+                pass
+
+            if self.completion_mode == 'aggressive':
                 if candle['Close'] > candle['Open'] and candle['Close'] > prev_candle['High']:
                     self.stage = "Completed"
                     self.expectation_mode = False
                     self.log_event(f"*** Inverse Head & Shoulders 패턴 완성! (Aggressive) *** Price={candle['Close']:.0f}, Prev High={prev_candle['High']:.0f}", "INFO")
+                    return
+
             elif self.completion_mode == 'neckline':
-                # 기울어진 넥라인 돌파 확인
-                if self.P2_ihs and self.P3_ihs: # P2, P3 정보 필요
+                if getattr(self, 'P2_ihs', None) and getattr(self, 'P3_ihs', None):
                     try:
                         p2_idx = self.P2_ihs['index']; p3_idx = self.P3_ihs['index']
-                        # 넥라인은 P2, P3의 High 값을 기준으로 계산 (Close 대신 High 사용)
-                        p2_val = self.P2_ihs.get('value') # P2 High 값
-                        p3_val = self.P3_ihs.get('value') # P3 High 값
-
+                        p2_val = self.P2_ihs.get('value'); p3_val = self.P3_ihs.get('value')
                         if p2_val is None or p3_val is None:
-                            self.log_event("경고: 넥라인 계산 위한 P2 또는 P3 value 없음.", "WARNING"); return
-
+                            self.log_event("넥라인 계산을 위한 P2/P3 값 누락", "WARNING")
+                            return
                         if p3_idx > p2_idx:
                             neck_run = p3_idx - p2_idx
                             neck_rise = p3_val - p2_val
                             neck_slope = neck_rise / neck_run if neck_run != 0 else 0
-
                             current_i = current_index_loc
-                            # neck_val = p2_val + (current_i - p2_idx) * neck_slope
-                            # P3 기준 역산 또는 보간
                             neck_val = p2_val + (current_i - p2_idx) * neck_slope
-
-
-                            # 돌파 확인: 현재 종가 >= 넥라인 값
                             if candle['Close'] >= neck_val:
                                 self.stage = "Completed"
                                 self.expectation_mode = False
                                 self.neckline_level = neck_val
-                                self.log_event(f"*** Inverse Head & Shoulders 패턴 완성! (Neckline Break) *** Price={candle['Close']:.0f}, Neckline={neck_val:.0f}, Slope={neck_slope:.2f}", "INFO")
+                                self.log_event(f"*** Inverse Head & Shoulders 패턴 완성! (Neckline Break) *** Price={candle['Close']:.0f}, Neckline={neck_val:.0f}", "INFO")
+                                return
                         else:
-                            self.log_event("경고: 넥라인 계산 위한 P2/P3 인덱스 오류.", "WARNING")
-
-                    except KeyError as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 확인 중 가격 데이터 접근 실패 (키={e})", "ERROR")
-                    except TypeError as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 계산 중 타입 오류: {e}", "ERROR")
+                            self.log_event("넥라인 계산을 위한 P2/P3 인덱스 오류", "WARNING")
                     except Exception as e:
-                        self.log_event(f"오류: 넥라인 완성 조건 확인 중 예외 발생: {e}", "ERROR")
-                else:
-                    self.log_event("경고: 넥라인 완성 조건 확인 위한 P2 또는 P3 정보 부족.", "WARNING")                
+                        self.log_event(f"넥라인 완성 조건 확인 중 예외: {e}", "ERROR")
+                        return
+
 # --- DoubleBottomDetector 전체 코드 (수정된 __init__ 포함) ---
 class DoubleBottomDetector(PatternDetector):
     
@@ -948,7 +774,7 @@ class DoubleTopDetector(PatternDetector):
 
 
 class PatternManager:
-    def __init__(self, data):
+    def __init__(self, data, tolerance: Optional[float] = None):
         """
         모든 패턴 감지기를 관리하는 클래스.
 
@@ -962,6 +788,154 @@ class PatternManager:
         self.completed_hs: List[Dict] = []              # 완성된 Head and Shoulders 패턴 정보
         self.completed_ihs: List[Dict] = []             # 완성된 Inverse H&S 패턴 정보
         self.failed_detectors: List[PatternDetector] = [] # 실패/리셋된 감지기 목록
+
+        # 이미 완성된 패턴의 앵커(패턴타입, 앵커인덱스)를 저장하여 재탐지를 방지
+        self.completed_pattern_anchors: List[Tuple[str, int]] = []
+
+        # 클래스 속성으로 head_rise_ratio 정의 (evaluate_candidate에서 사용)
+        self.head_rise_ratio = 0.5  # 기본값, 나중에 파라미터화 가능
+
+    def _score_structural_candidate(self, cand: Dict[str, Dict]) -> float:
+        """후보(구조 포인트 dict)에 대해 점수를 계산하여 반환.
+        점수 구성 요소:
+          - head prominence (비중 0.45)
+          - symmetry (비중 0.2)
+          - balance (비중 0.15, 차이가 작을수록 가점)
+          - js ratio (비중 0.1)
+          - recency (비중 0.05)
+          - compact span (비중 0.05)
+          - neckline slope penalty (감점)
+        """
+        try:
+            pt = cand.get('pattern_type')
+            # 공통 값/시간 추출 유틸
+            def _val(d, key='value'):
+                return None if d is None else d.get(key)
+            def _idx(d):
+                try:
+                    return int(d.get('index')) if d and 'index' in d else None
+                except Exception:
+                    return None
+            def _ts(d):
+                ad = None if d is None else d.get('actual_date')
+                try:
+                    return pd.to_datetime(ad) if ad is not None else None
+                except Exception:
+                    return None
+
+            # 값들
+            V1, P1, V2, P2, V3, P3 = cand.get('V1'), cand.get('P1'), cand.get('V2'), cand.get('P2'), cand.get('V3'), cand.get('P3')
+            v1, p1, v2, p2, v3, p3 = _val(V1), _val(P1), _val(V2), _val(P2), _val(V3), _val(P3)
+
+            # head prominence (evaluate_candidate와 동일한 정규화 기준 사용)
+            head_prom = 0.0
+            try:
+                if pt == 'HS' and all(x is not None for x in [p1, p2, p3, v1, v2, v3]):
+                    shoulder_high = max(p1, p3)
+                    pattern_low = min(v1, v2, v3)
+                    pattern_height = (p2 - pattern_low)
+                    if pattern_height > 0:
+                        head_prom = max(0.0, (p2 - shoulder_high) / float(pattern_height))
+                elif pt == 'IHS' and all(x is not None for x in [v1, v2, v3, p1, p2, p3]):
+                    shoulder_low = min(v1, v3)
+                    pattern_high = max(p1, p2, p3)
+                    pattern_height = (pattern_high - v2)
+                    if pattern_height > 0:
+                        head_prom = max(0.0, (shoulder_low - v2) / float(pattern_height))
+            except Exception:
+                head_prom = 0.0
+
+            # symmetry (시간 대칭)
+            p1_ts, p2_ts, p3_ts = _ts(P1), _ts(P2), _ts(P3)
+            sym = 0.0
+            try:
+                if p1_ts and p2_ts and p3_ts:
+                    L = max((p2_ts - p1_ts).total_seconds(), 1.0)
+                    R = max((p3_ts - p2_ts).total_seconds(), 1.0)
+                    ratio = max(L / R, R / L)
+                    # 1에 가까울수록 1점, 멀어질수록 0점에 수렴
+                    sym = 1.0 / ratio
+            except Exception:
+                sym = 0.0
+
+            # balance (좌/우 평균 차이 작을수록 좋음)
+            bal = 0.0
+            try:
+                if all(x is not None for x in [p1, v2, p3, v3]):
+                    l_mid = 0.5 * (p1 + v2)
+                    r_mid = 0.5 * (p3 + v3)
+                    diff = abs(l_mid - r_mid)
+                    denom = max(abs(l_mid), abs(r_mid), 1.0)
+                    bal = 1.0 / (1.0 + diff / denom)
+            except Exception:
+                bal = 0.0
+
+            # js ratio (6포인트 중 js_* 비율)
+            def _is_js(d):
+                t = None if d is None else str(d.get('type', ''))
+                return t.startswith('js_')
+            js_count = sum(1 for d in [V1, P1, V2, P2, V3, P3] if _is_js(d))
+            js_ratio = js_count / 6.0
+
+            # recency (앵커 인덱스가 클수록 가점)
+            anchor_idx = None
+            if pt == 'HS':
+                anchor_idx = _idx(V3)
+            else:
+                anchor_idx = _idx(P3)
+            recency = 0.0
+            try:
+                if anchor_idx is not None and len(self.data.index) > 0:
+                    recency = max(0.0, min(1.0, float(anchor_idx) / float(len(self.data.index))))
+            except Exception:
+                recency = 0.0
+
+            # compact span (짧을수록 가점)
+            times = list(filter(None, [_ts(V1), _ts(P1), _ts(V2), _ts(P2), _ts(V3), _ts(P3)]))
+            compact = 0.0
+            try:
+                if times:
+                    span_days = max((max(times) - min(times)).days, 0)
+                    compact = 1.0 / (1.0 + span_days)
+            except Exception:
+                compact = 0.0
+
+            # neckline slope penalty (작을수록 가점)
+            slope_penalty = 0.0
+            try:
+                if pt == 'HS' and all(_idx(x) is not None and _val(x) is not None for x in [V2, V3]):
+                    run = float(_idx(V3) - _idx(V2))
+                    if run != 0:
+                        slope = abs((_val(V3) - _val(V2)) / run)
+                        slope_penalty = min(0.5, slope / max(abs(_val(V2)), 1.0) * 20.0)
+                elif pt == 'IHS' and all(_idx(x) is not None and _val(x) is not None for x in [P2, P3]):
+                    run = float(_idx(P3) - _idx(P2))
+                    if run != 0:
+                        slope = abs((_val(P3) - _val(P2)) / run)
+                        slope_penalty = min(0.5, slope / max(abs(_val(P2)), 1.0) * 20.0)
+            except Exception:
+                slope_penalty = 0.0
+
+            # --- [추가] 약화되는 매수세(P3 < P1)에 대한 가점 ---
+            declining_shoulder_bonus = 0.0
+            try:
+                if pt == 'HS' and p3 is not None and p1 is not None and float(p3) < float(p1):
+                    declining_shoulder_bonus = 0.1
+            except Exception:
+                declining_shoulder_bonus = 0.0
+
+            # 가중 합산
+            score = (
+                0.45 * head_prom +
+                0.20 * sym +
+                0.15 * bal +
+                0.10 * js_ratio +
+                0.05 * recency +
+                0.05 * compact
+            ) - slope_penalty + declining_shoulder_bonus
+            return float(score)
+        except Exception:
+            return 0.0
 
     def _find_extremum_before(self, all_extremums: List[Dict], target_index: int, extremum_type_suffix: str) -> Optional[Dict]:
         """
@@ -980,326 +954,528 @@ class PatternManager:
         candidates = [e for e in all_extremums if e.get('index', -1) < target_index and e.get('type','').endswith(extremum_type_suffix)]
         return max(candidates, key=lambda x: x['index']) if candidates else None
     
-    def _find_hs_ihs_structural_points(self, all_extremums: List[Dict], lookback_limit: int = 15) -> Optional[Dict[str, Dict]]:
+    def _find_hs_ihs_structural_points(self, all_extremums: List[Dict], pattern_type_to_search: str, lookback_limit: int = 20,
+                                       max_skip: int = 2, max_candidates: int = 15,
+                                       symmetry_threshold: float = 2.5, head_rise_ratio: float = 0.5,
+                                       current_index: Optional[int] = None) -> List[Dict[str, Dict]]:
+        """HS/IHS 구조적 포인트 다중 후보 검색 (시간 기반 통합 처리 + V-P pair skip)
         
-        """H&S 또는 IHS 패턴을 구성하는 5개의 핵심 구조적 극점을 탐색합니다. (신뢰도 우선)
-
-        가장 최근에 발생한 극점부터 시작하여 과거 기록을 역추적하며, H&S 패턴의
-        뼈대(V1, P1, V2, P2, V3) 또는 IHS 패턴의 뼈대(P1, V1, P2, V2, P3)를 식별합니다.
-
-        핵심 아이디어: 연속으로 발생하는 동일 타입의 극점들(consecutive_buffer)을
-        그룹화한 뒤, **신뢰도(confidence)** 를 우선으로 삼아 대표 극점을 선택합니다.
-        신뢰도는 'confirmed' > 'provisional' > 'base' 순이며, 동률인 경우 가격(peak는 최대, valley는 최소)
-        을 기준으로 대표를 결정합니다. 이로써 트렌드 감지기의 계층적 신뢰도 모델을
-        PatternManager에서 적극 활용할 수 있습니다.
-
-        Args:
-            all_extremums (List[Dict]): JS와 Secondary를 포함하여 시간순(`index` 기준)으로
-                정렬된 전체 극점 리스트.
-            lookback_limit (int): 패턴 구조를 찾기 위해 과거로 탐색할 최대 극점의 수.
-
-        Returns:
-            Optional[Dict[str, Dict]]: 발견 시 5개 구조적 극점과 'pattern_type'을 포함한 딕셔너리,
-            실패 시 None 반환.
+        주의: all_extremums는 이미 시간순으로 정렬되어 전달됨 (최신이 마지막)
         """
-        if len(all_extremums) < 5:
-            return None
+        if len(all_extremums) < 6: return []  # 최소 6포인트 필요
 
-        structural_points = {}
-        last_extremum = all_extremums[-1]
-        current_index = len(all_extremums) - 1
-        points_found = 0
-        consecutive_buffer = [] # 연속된 동일 타입 극점 임시 저장
-
-        # 패턴 타입 결정 및 목표 극점 설정
-        # 마지막 극점이 'valley'인 경우에는 H&S 패턴을 찾습니다. 이 때 마지막 극점은 'V3'로 간주하며, 찾아야 하는 타겟은 'P2'로 설정
-        # 마지막 극점이 'peak'인 경우에는 IHS 패턴을 찾습니다. 이 때 마지막 극점은 'P3'로 간주하며, 찾아야 하는 타겟은 'V2'로 설정
-        # 확장: 문서/실전 요구에 따라 5개의 구조적 극점(V1,P1,V2,P2,V3 또는 P1,V1,P2,V2,P3)을 찾도록 조정
-        if last_extremum.get('type', '').endswith('valley'):
-            pattern_type = 'HS'
-            # 역순으로 찾아가며 V3(이미 있음) -> P2 -> V2 -> P1 -> V1 을 수집
-            target_sequence = ['V3', 'P2', 'V2', 'P1', 'V1']
-            structural_points['V3'] = last_extremum
-            current_target_role = 'P2'
-            current_target_type = 'peak'
-            points_found = 1
-        elif last_extremum.get('type', '').endswith('peak'):
-            pattern_type = 'IHS'
-            # 역순으로 찾아가며 P3(이미 있음) -> V2 -> P2 -> V1 -> P1 수집
-            target_sequence = ['P3', 'V2', 'P2', 'V1', 'P1']
-            structural_points['P3'] = last_extremum
-            current_target_role = 'V2'
-            current_target_type = 'valley'
-            points_found = 1
-        else:
-            return None # 마지막 극점 타입 불분명
-
-        # 루프 시작점: 마지막 극점 바로 이전부터
-        search_index = current_index - 1
-        lookback_count = 0
+        # all_extremums는 이미 check_for_hs_ihs_start에서 정렬됨
+        # 최신부터 처리하기 위해 역순으로 변경
+        sorted_extremums = list(reversed(all_extremums))
         
-      
-
-        # --- 구조적 극점 역방향 탐색 루프 ---
-        # 가장 마지막 극점부터 시작하여 과거로 이동하며 H&S/IHS 패턴의 뼈대를 구성하는
-        # 5개의 구조적 극점을 순서대로 찾습니다.
-        #
-        # 핵심 전략:
-        # 1. '연속 버퍼(consecutive_buffer)'를 사용하여 연속으로 나타나는 동일 타입의 극점들을 그룹화합니다.
-        # 2. 다른 타입의 극점이 나타나면, 버퍼에 저장된 후보들 중 가장 의미 있는 극점
-        #    (Peak 중 최고가, Valley 중 최저가) 하나만을 대표로 선택하여 구조에 포함시킵니다.
-        #
-        # 종료 조건:
-        # - 5개의 구조적 극점을 모두 찾았을 경우
-        # - 탐색 범위 제한(lookback_limit)에 도달했을 경우
-        # - 더 이상 탐색할 과거 극점이 없을 경우
-        
-
-        while search_index >= 0 and points_found < 5 and lookback_count < lookback_limit:
-            current_point = all_extremums[search_index]
-            current_type = 'peak' if current_point.get('type', '').endswith('peak') else 'valley'
-
-            if current_type == current_target_type:
-                # 목표 타입과 일치 -> 연속 버퍼에 추가
-                consecutive_buffer.append(current_point)
+        # 2. V-P-V-P 시퀀스 생성 (연속 동타입 처리)
+        # 최신부터 과거로 가면서 처리
+        # 같은 타입이 연속으로 나오면 더 극단적인 값 선택
+        vp_sequence = []
+        for ext in sorted_extremums:  # 최신부터 과거로
+            if not vp_sequence:
+                vp_sequence.append(ext)
             else:
-                # 다른 타입 발견 -> 이전 버퍼 처리 및 새 타입 검색 시작
-                if consecutive_buffer:
-                    # --- 신규: 신뢰도 우선 선택 로직 적용 ---
-                    representative_point = None
-                    # 1) 신뢰도 맵 정의
-                    confidence_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
-                    for p in consecutive_buffer:
-                        # 안전: 만약 confidence 필드가 없으면 'base'로 간주
-                        p_conf = p.get('confidence', 'base')
-                        p['confidence_score'] = confidence_map.get(p_conf, 1)
-
-                    # 2) 버퍼 내에서 최대 신뢰도 점수 선택
-                    max_confidence_score = max(p['confidence_score'] for p in consecutive_buffer)
-                    top_tier_points = [p for p in consecutive_buffer if p['confidence_score'] == max_confidence_score]
-
-                    # 3) 동률일 경우 가격 기준으로 대표 선택 (peak -> max, valley -> min)
-                    if top_tier_points:
-                        if current_target_type == 'peak':
-                            representative_point = max(top_tier_points, key=lambda x: x.get('value', -np.inf))
-                        else:
-                            representative_point = min(top_tier_points, key=lambda x: x.get('value', np.inf))
-                    # --- 로직 적용 끝 ---
-
-                    if representative_point:
-                        structural_points[current_target_role] = representative_point
-                        points_found += 1
-                        if points_found == len(target_sequence): break # 목표 개수만큼 찾으면 종료
-
-                        # 다음 목표 설정
-                        next_role_index = target_sequence.index(current_target_role) + 1
-                        if next_role_index < len(target_sequence):
-                            current_target_role = target_sequence[next_role_index]
-                            current_target_type = 'peak' if current_target_role.startswith('P') else 'valley'
-                        else: break
-
-                # 새 타입 검색 준비
-                consecutive_buffer = [current_point] # 새 버퍼 시작
-                # current_target_type = current_type # 이미 위에서 설정됨
-
-            search_index -= 1
-            lookback_count += 1
-
-        # 루프 종료 후 마지막 버퍼 처리 (위와 동일한 신뢰도 우선 로직 적용)
-        if points_found < len(target_sequence) and consecutive_buffer:
-            representative_point = None
-            confidence_map = {'confirmed': 3, 'provisional': 2, 'base': 1}
-            for p in consecutive_buffer:
-                p_conf = p.get('confidence', 'base')
-                p['confidence_score'] = confidence_map.get(p_conf, 1)
-            max_confidence_score = max(p['confidence_score'] for p in consecutive_buffer)
-            top_tier_points = [p for p in consecutive_buffer if p['confidence_score'] == max_confidence_score]
-
-            if top_tier_points:
-                if current_target_type == 'peak':
-                    representative_point = max(top_tier_points, key=lambda x: x.get('value', -np.inf))
+                last_type = 'peak' if str(vp_sequence[-1].get('type', '')).endswith('peak') else 'valley'
+                cur_type = 'peak' if str(ext.get('type', '')).endswith('peak') else 'valley'
+                
+                if cur_type != last_type:
+                    # 타입이 다르면 그냥 추가
+                    vp_sequence.append(ext)
                 else:
-                    representative_point = min(top_tier_points, key=lambda x: x.get('value', np.inf))
+                    # 같은 타입이면 더 극단적인 값으로 대체
+                    if cur_type == 'peak':
+                        if ext.get('value', 0) > vp_sequence[-1].get('value', 0):
+                            vp_sequence[-1] = ext
+                    else:  # valley
+                        if ext.get('value', float('inf')) < vp_sequence[-1].get('value', float('inf')):
+                            vp_sequence[-1] = ext
+        
+        # 3. 패턴 타입은 호출자가 명시 (듀얼 탐색 지원)
+        if not vp_sequence:
+            return []
+        pattern_type = 'HS' if str(pattern_type_to_search).upper() == 'HS' else 'IHS'
+        
+        # 4. 재귀 함수로 후보 생성 (백트래킹 방식)
+        candidates = []
 
-            if representative_point:
-                structural_points[current_target_role] = representative_point
-                points_found += 1
+        # ✨ 디버깅용: 모든 시도된 조합을 추적
+        all_attempts = []  # [(mapping, eval_result, pos, skips_left), ...]
 
-        # 최종 확인
-        # 성공적으로 모든 목표 포인트를 찾았는지 확인
-        if points_found == len(target_sequence):
-            structural_points['pattern_type'] = pattern_type
-            # 시간 순서 재확인: target_sequence는 역순(최신->과거)으로 만들어졌으므로
-            # 역순으로 뒤집어 실제 시계열 순서(P1/V1 -> ... -> V3/P3)를 얻는다.
-            indices = []
-            roles = target_sequence[::-1]
-            valid_sequence = True
-            for role in roles:
-                if role not in structural_points:
-                    valid_sequence = False; break
-                indices.append(structural_points[role]['index'])
+        def find_pattern_combinations(pos: int, points_so_far: List[Dict], skips_left: int):
+            """
+            백트래킹을 사용하여 가능한 모든 skip 조합을 탐색하는 재귀 함수.
+            pos: vp_sequence에서 탐색을 시작할 현재 위치
+            points_so_far: 현재까지 만들어진 패턴 후보
+            skips_left: 남은 skip 가능 횟수 (V-P 쌍 기준)
+            """
+            # 후보 수 제한 또는 탐색 종료 조건
+            if len(candidates) >= max_candidates or pos >= len(vp_sequence):
+                return
 
-            if valid_sequence and all(indices[i] < indices[i+1] for i in range(len(indices)-1)):
-                return structural_points
-            else:
-                logger.debug(f"Found structural points for {pattern_type}: indices={indices}")
-                return None # 시간 순서가 맞지 않으면 유효하지 않음
+            # 6포인트 완성 시 평가 및 저장
+            if len(points_so_far) == 6:
+                time_ordered = list(reversed(points_so_far))
+
+                if pattern_type == 'HS':
+                    mapping = {'V1': time_ordered[0], 'P1': time_ordered[1], 'V2': time_ordered[2],
+                               'P2': time_ordered[3], 'V3': time_ordered[4], 'P3': time_ordered[5], 'pattern_type': 'HS'}
+                else: # IHS
+                    mapping = {'P1': time_ordered[0], 'V1': time_ordered[1], 'P2': time_ordered[2],
+                               'V2': time_ordered[3], 'P3': time_ordered[4], 'V3': time_ordered[5], 'pattern_type': 'IHS'}
+
+                # ✨ 디버깅용: 모든 시도된 조합 추적 (검증 결과 포함)
+                try:
+                    eval_result = self.evaluate_candidate(mapping, pattern_type, current_index=current_index)
+                    all_attempts.append({
+                        'mapping': mapping.copy(),
+                        'eval_result': eval_result,
+                        'pos': pos,
+                        'skips_left': skips_left,
+                        'points_so_far': points_so_far.copy(),
+                        'time_ordered': time_ordered.copy()
+                    })
+                except Exception as e:
+                    # 평가 중 오류 발생 시에도 기록
+                    all_attempts.append({
+                        'mapping': mapping.copy(),
+                        'eval_result': False,
+                        'error': str(e),
+                        'pos': pos,
+                        'skips_left': skips_left,
+                        'points_so_far': points_so_far.copy(),
+                        'time_ordered': time_ordered.copy()
+                    })
+
+                if self.evaluate_candidate(mapping, pattern_type, current_index=current_index):
+                    # 중복된 후보 방지
+                    if mapping not in candidates:
+                        candidates.append(mapping)
+                return
+
+            # 다음에 찾아야 할 극점의 타입 결정
+            if pattern_type == 'HS': # 역시간순: P3, V3, P2, ...
+                expected_type = 'peak' if len(points_so_far) % 2 == 0 else 'valley'
+            else: # IHS, 역시간순: V3, P3, V2, ...
+                expected_type = 'valley' if len(points_so_far) % 2 == 0 else 'peak'
+
+            # pos 위치부터 시작하여 다음 후보를 찾는다
+            for i in range(pos, len(vp_sequence)):
+                candidate_point = vp_sequence[i]
+                cur_type = 'peak' if str(candidate_point.get('type', '')).endswith('peak') else 'valley'
+
+                if cur_type == expected_type:
+                    # 건너뛴 V-P 쌍의 개수 계산
+                    pairs_skipped = (i - pos) // 2
+                    
+                    if pairs_skipped <= skips_left:
+                        # 이 후보를 선택하고 다음 단계로 진행
+                        new_points = points_so_far + [candidate_point]
+                        find_pattern_combinations(i + 1, new_points, skips_left - pairs_skipped)
+
+        # 가장 최신 극점부터 탐색 시작
+        find_pattern_combinations(0, [], max_skip)
+
+        # ✨ 디버깅용: 모든 시도된 조합 정보 반환
+        return candidates, all_attempts
+
+    # 평가 함수 (조건 검사)
+    def evaluate_candidate(self, seq: List[Dict], pattern_type: str, current_index: Optional[int] = None) -> bool:
+        # 입력 정규화: dict(mapping) 또는 list 모두 수용
+        if isinstance(seq, dict):
+            pattern_type = seq.get('pattern_type', pattern_type)
+            seq_list = [v for k, v in seq.items() if k != 'pattern_type']
         else:
-            logger.debug(f"Could not find 5 structural points ({points_found} found).") # 로그 추가
+            seq_list = list(seq)
+
+        if len(seq_list) < 6:
+            return False
+        if not all(hasattr(x, 'get') for x in seq_list):
+            return False
+
+        # 시간 정렬 (actual_date 우선, 없으면 안전 폴백: 인덱스→Timestamp)
+        def _time_key(item):
+            ad = item.get('actual_date')
+            if ad is not None:
+                try:
+                    return pd.to_datetime(ad)
+                except Exception:
+                    pass
+            try:
+                if hasattr(self, 'data') and self.data is not None and 'index' in item:
+                    idx = int(item.get('index', -1))
+                    if 0 <= idx < len(self.data.index):
+                        return self.data.index[idx]
+            except Exception:
+                pass
+            return pd.Timestamp('1900-01-01')
+
+        seq_time_order = sorted(seq_list, key=_time_key)
+        if len(seq_time_order) < 6:
+            return False
+
+        # 타입 시퀀스 확인
+        types = ['peak' if str(s.get('type','')).endswith('peak') else 'valley' for s in seq_time_order]
+        hs_types = ['valley', 'peak', 'valley', 'peak', 'valley', 'peak']
+        ihs_types = ['peak', 'valley', 'peak', 'valley', 'peak', 'valley']
+
+        if types == hs_types:
+            pattern_type = 'HS'
+            V1, P1, V2, P2, V3, P3 = seq_time_order
+        elif types == ihs_types:
+            pattern_type = 'IHS'
+            P1, V1, P2, V2, P3, V3 = seq_time_order
+        else:
+            return False
+
+        # 값 추출
+        v1_val, p1_val = V1.get('value'), P1.get('value')
+        v2_val, p2_val = V2.get('value'), P2.get('value')
+        v3_val, p3_val = V3.get('value'), P3.get('value')
+        if None in [v1_val, p1_val, v2_val, p2_val, v3_val, p3_val]:
+            return False
+
+        # 1) 기하 규칙
+        if pattern_type == 'HS':
+            if not (p2_val > p1_val and p2_val > p3_val):
+                return False
+            if not (v2_val > v1_val):
+                return False
+        else:  # IHS
+            if not (v2_val < v1_val and v2_val < v3_val):
+                return False
+            if not (p2_val < p1_val):
+                return False
+
+        # 2) 사후 무효화 (현재 시점까지만 검사)
+        if hasattr(self, 'data') and isinstance(self.data, pd.DataFrame) and len(self.data.index) > 0:
+            try:
+                end_idx = int(current_index) if isinstance(current_index, int) else len(self.data.index) - 1
+                if pattern_type == 'HS':
+                    start_idx = int(V3.get('index', -1)) + 1
+                    inv_level = max(float(p1_val), float(p3_val))
+                    if 0 <= start_idx <= end_idx:
+                        post_df = self.data.iloc[start_idx:end_idx+1]
+                        if not post_df.empty and (post_df['Close'] > inv_level).any():
+                            return False
+                else:  # IHS
+                    start_idx = int(P3.get('index', -1)) + 1
+                    inv_level = min(float(v1_val), float(v3_val))
+                    if 0 <= start_idx <= end_idx:
+                        post_df = self.data.iloc[start_idx:end_idx+1]
+                        if not post_df.empty and (post_df['Close'] < inv_level).any():
+                            return False
+            except Exception:
+                pass
+
+        # 3) 균형(Balance)
+        if pattern_type == 'HS':
+            l_mid = 0.5 * (p1_val + v2_val)
+            r_mid = 0.5 * (p3_val + v3_val)
+            if p1_val < r_mid or p3_val < l_mid:
+                return False
+        else:  # IHS
+            l_mid = 0.5 * (v1_val + p2_val)
+            r_mid = 0.5 * (v3_val + p3_val)
+            if v1_val > r_mid or v3_val > l_mid:
+                return False
+
+        # 4) 시간 대칭(Symmetry)
+        def _to_ts(item):
+            ad = item.get('actual_date')
+            try:
+                return pd.to_datetime(ad)
+            except Exception:
+                try:
+                    idx = int(item.get('index', -1))
+                    if hasattr(self, 'data') and self.data is not None and 0 <= idx < len(self.data.index):
+                        return self.data.index[idx]
+                except Exception:
+                    pass
             return None
 
-    # PatternManager 클래스 내
-# PatternManager 클래스 내
-    def check_for_hs_ihs_start(self, peaks: List[Dict], valleys: List[Dict], completion_mode: str = 'neckline'): # completion_mode 추가 (기본값 'aggressive')
+        if pattern_type == 'HS':
+            p1_ts, p2_ts, p3_ts = _to_ts(P1), _to_ts(P2), _to_ts(P3)
+            if not p1_ts or not p2_ts or not p3_ts:
+                return False
+            l_time = (p2_ts - p1_ts).total_seconds()
+            r_time = (p3_ts - p2_ts).total_seconds()
+        else:
+            v1_ts, v2_ts, v3_ts = _to_ts(V1), _to_ts(V2), _to_ts(V3)
+            if not v1_ts or not v2_ts or not v3_ts:
+                return False
+            l_time = (v2_ts - v1_ts).total_seconds()
+            r_time = (v3_ts - v2_ts).total_seconds()
+
+        if l_time <= 0 or r_time <= 0 or r_time > 2.5 * l_time or l_time > 2.5 * r_time:
+            return False
+
+        # 5) 머리 돌출(Head Prominence Ratio) – 파라미터화
+        MIN_PROMINENCE_RATIO = getattr(self, 'min_head_prom_ratio', 0.20)
+        try:
+            if pattern_type == 'HS':
+                shoulder_high = max(p1_val, p3_val)
+                pattern_low = min(v1_val, v2_val, v3_val)
+                pattern_height = p2_val - pattern_low
+                if pattern_height <= 0 or (p2_val - shoulder_high) / pattern_height < float(MIN_PROMINENCE_RATIO):
+                    return False
+            else:  # IHS
+                shoulder_low = min(v1_val, v3_val)
+                pattern_high = max(p1_val, p2_val, p3_val)
+                pattern_height = pattern_high - v2_val
+                if pattern_height <= 0 or (shoulder_low - v2_val) / pattern_height < float(MIN_PROMINENCE_RATIO):
+                    return False
+        except Exception:
+            return False
+
+        return True
+
+    def check_for_hs_ihs_start(self, peaks: List[Dict], valleys: List[Dict], 
+                               newly_registered_peak: Optional[Dict] = None, 
+                               newly_registered_valley: Optional[Dict] = None,
+                               completion_mode: str = 'neckline', current_index: Optional[int] = None):
         """
-        (수정 V4) 새로운 극점 발생 시 H&S 또는 IH&S 패턴의 시작 가능성을
-        구조적 극점 식별 로직(연속 P/V 처리 포함) 및 기본 가격 조건 검증 후 감지기를 생성합니다.
-        세부 검증(균형, 대칭) 및 완성 조건은 Detector 내부에서 처리합니다.
-
-        Args:
-            peaks (List[Dict]): 현재까지 등록된 모든 Peak (JS + Sec) 리스트.
-            valleys (List[Dict]): 현재까지 등록된 모든 Valley (JS + Sec) 리스트.
-            completion_mode (str): 패턴 완성 조건 옵션 ('aggressive' 또는 'neckline').
+        새로운 극점 발생 시 H&S/IHS 패턴 시작 확인 (다중 후보 지원 버전).
         """
-        all_extremums = sorted(peaks + valleys, key=lambda x: x.get('index', -1))
-        if len(all_extremums) < 5: return
-
-        # 1. 구조적 극점 후보 찾기 (V1,P1,V2,P2,V3 또는 P1,V1,P2,V2,P3)
-        structural_points = self._find_hs_ihs_structural_points(all_extremums)
-        # logger.debug(f"Checking for H&S/IHS start: Structural points found: {'Yes' if structural_points else 'No'}") # 디버깅 필요 시 활성화
-
-        if structural_points:
-            pattern_type = structural_points.get('pattern_type')
-            log_date = all_extremums[-1].get('detected_date', pd.Timestamp.now()).strftime('%Y-%m-%d')
-
-            # Debug hook: if key structural extremums are missing, log and expose for debugger
-            # - For HS we expect V1 present; for IHS we expect P1 present.
+        # 입력 all_extremums actual_date 필터링 및 정렬
+        valid_extremums = [x for x in peaks + valleys if x.get('actual_date') is not None and isinstance(x.get('actual_date'), pd.Timestamp)]
+        none_count = len(peaks + valleys) - len(valid_extremums)
+        if none_count > 0:
+            logger.warning(f"[{pd.Timestamp.now().strftime('%Y-%m-%d')}] actual_date None {none_count}개 필터링 – HS/IHS 후보 영향 가능")
+        
+        # actual_date 안전 변환 후 시간순 정렬 (오래된 것부터 최신순)
+        def _to_ts2(e):
+            ad = e.get('actual_date')
             try:
-                if pattern_type == 'HS' and (not structural_points.get('V1')):
-                    logger.info(f"[{log_date}] HS structural points missing V1 - keys={list(structural_points.keys())}")
-                    # expose for interactive debugging
-                    self._last_structural_issue = {'pattern_type': 'HS', 'missing': 'V1', 'structural_points': structural_points}
-                if pattern_type == 'IHS' and (not structural_points.get('P1')):
-                    logger.info(f"[{log_date}] IHS structural points missing P1 - keys={list(structural_points.keys())}")
-                    self._last_structural_issue = {'pattern_type': 'IHS', 'missing': 'P1', 'structural_points': structural_points}
+                return pd.to_datetime(ad)
             except Exception:
-                # Do not break pattern flow during debug logging
-                logger.debug(f"[{log_date}] structural points debug hook encountered an error", exc_info=True)
+                return pd.Timestamp('1900-01-01')
+        
+        def get_anchor_date_str(c):
+            pt = c.get('pattern_type')
+            anchor_extremum = c.get('V3') if pt == 'HS' else c.get('P3')
+            if anchor_extremum and 'actual_date' in anchor_extremum:
+                date_val = anchor_extremum['actual_date']
+                # pd.Timestamp인지 확인 후 포맷팅, 아닐 경우 문자열로 변환
+                return date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else str(date_val)
+            return '날짜 N/A'
+        
+          # 포인트 정보 추출 헬퍼
+        def get_point_str(point, key):
+            if point:
+                val = point.get('value', 'N/A')
+                date = point.get('actual_date')
+                date_str = date.strftime('%y%m%d') if isinstance(date, pd.Timestamp) else 'N/A'
+                return f"{key}({val}):{date_str}"
+            return f"{key}(N/A):N/A"
 
-            try: # 딕셔너리 키 접근 및 검증 로직 오류 방지
-                if pattern_type == 'HS':
-                    
-                    v1 = structural_points.get('V1')  
-                    p1 = structural_points.get('P1')
-                    v2 = structural_points.get('V2')
-                    p2 = structural_points.get('P2')
-                    v3 = structural_points.get('V3')
-                    
+        all_extremums = sorted(valid_extremums, key=lambda x: _to_ts2(x))  # 오래된 것 -> 최신 순
+        if len(all_extremums) < 6: return
 
-                    # logger.debug(f"[{log_date}] Checking H&S candidate: P1={p1.get('index')} V2={v2.get('index')} P2={p2.get('index')} V3={v3.get('index')} V1={getattr(v1,'index',None)}")
+        # 구조적 포인트 후보 찾기 (정렬된 데이터 전달)
+        # ---- 듀얼 탐색 로직 시작 ----
+        search_types = set()
+        if newly_registered_peak:
+            search_types.add('HS')
+        if newly_registered_valley:
+            search_types.add('IHS')
 
-                    if not all([v1,p1, v2, p2, v3]):
-                        return
+        if not search_types and all_extremums:
+            last_ext = all_extremums[-1]
+            search_types.add('IHS' if 'valley' in str(last_ext.get('type','')) else 'HS')
 
-                    is_valid = True
-                    # 기본 규칙: 머리(P2)는 반드시 왼쪽 어깨(P1)보다 높아야 함
-                    if not (p2.get('value', -np.inf) > p1.get('value', -np.inf)):
-                        is_valid = False
-                        logger.info(f"[{log_date}] H&S Initial Rule Fail: P2({p2.get('value'):.0f}) <= P1({p1.get('value'):.0f})")
-                    
-                    # ✨ 검증 2: 제안에 따른 '패턴 조화' 검증 ✨
-                    if is_valid:
-                        shoulder_rise = p1['value'] - v1['value']
-                        head_rise_from_shoulder = p2['value'] - p1['value']
+        if not search_types:
+            return
+
+        structural_points_list = []
+        all_attempts = []
+
+        for p_type in search_types:
+            logger.debug(f"H&S/IHS: '{p_type}' 타입 패턴 탐색을 시작합니다.")
+            s_points, attempts = self._find_hs_ihs_structural_points(
+                all_extremums,
+                pattern_type_to_search=p_type,
+                current_index=current_index
+            )
+            structural_points_list.extend(s_points)
+            all_attempts.extend(attempts)
+
+        if len(structural_points_list) > 0:
+            from collections import Counter
+            anchor_summary = Counter(get_anchor_date_str(c) for c in structural_points_list)
+            summary_str = ", ".join([f"'{date}'({count}개)" for date, count in anchor_summary.items()])
+            logger.info(f"H&S/IHS: {len(structural_points_list)}개 유효 후보 발견. 앵커 그룹 요약: {summary_str}")
+        # ---- 듀얼 탐색 로직 끝 ----
+
+            
+
+        # ✨ 디버깅용: 모든 시도된 조합을 저장 (전역 저장소에 누적)
+        if not hasattr(self, '_debug_all_attempts'):
+            self._debug_all_attempts = []
+        self._debug_all_attempts.extend(all_attempts)
+
+        # 복수 후보를 앵커별 그룹으로 묶고 그룹당 1개만 선택
+        groups: Dict[Tuple[str, int], List[Dict]] = {}
+        for sp in structural_points_list:
+            pt = sp.get('pattern_type')
+            try:
+                if pt == 'HS':
+                    anchor = int(sp.get('V3', {}).get('index')) if sp.get('V3') else None
+                    key = ('HS', anchor)
+                else:
+                    anchor = int(sp.get('P3', {}).get('index')) if sp.get('P3') else None
+                    key = ('IHS', anchor)
+            except Exception:
+                key = (pt or 'UNK', -1)
+            groups.setdefault(key, []).append(sp)
+
+        # 각 그룹에서 최고 점수 1개만 선택
+        selected_candidates: List[Dict] = []
+        for key, lst in groups.items():
+            # 점수 계산 및 정렬
+            scored = sorted(
+                [(self._score_structural_candidate(x), x) for x in lst],
+                key=lambda t: t[0], reverse=True
+            )
                         
-                        if shoulder_rise <= 0:
-                            is_valid = False
-                            logger.info(f"[{log_date}] H&S Harmony Rule Fail: 어깨 높이(P1-V1)가 0 이하임")
-                        else:
-                            HEAD_RISE_TOLERANCE = 0.5
-                            ratio = head_rise_from_shoulder / shoulder_rise
-                            if ratio > HEAD_RISE_TOLERANCE:
-                                is_valid = False
-                                logger.info(f"[{log_date}] H&S Harmony Rule Fail: 머리/어깨 비율({ratio:.2f}) > {HEAD_RISE_TOLERANCE}")
+            if scored:
+                winner_score, winner_candidate = scored[0]
 
-                    
+                # ---- DEBUG/INFO 로그를 아래 코드로 대체합니다. ----
+                anchor_date_str = get_anchor_date_str(lst[0]) if lst else '날짜 N/A'
 
-                    # 3. 유효성 검증 통과 시 감지기 생성 시도
-                    if is_valid:
-                        # 동일한 P1으로 시작하는 활성 H&S 감지기가 없는지 확인
-                        # NOTE: 이전에는 V3가 반드시 'js_valley'여야 한다는 강제 필터가 있었습니다.
-                        # 해당 필터는 제거(주석 처리)하여 TrendDetector가 보고하는 provisional 극점으로도
-                        # H&S 탐색을 시작할 수 있도록 합니다. (신뢰도 기반 필터링은 _find_hs_ihs_structural_points에서 수행됨)
-                        # if v3.get('type') != 'js_valley':
-                        #     logger.debug(f"[{log_date}] Skip H&S creation: V3 is not js_valley (type={v3.get('type')}). Awaiting future js_valley.")
-                        #     return
+                # 최종 선정된 후보의 6개 극점 가격과 날짜를 함께 추출
+                pt = winner_candidate.get('pattern_type')
+                point_keys = ['V1','P1','V2','P2','V3','P3'] if pt == 'HS' else ['P1','V1','P2','V2','P3','V3']
+                point_details_parts = []
+                for p_key in point_keys:
+                    point = winner_candidate.get(p_key)
+                    date_str, val_str = "N/A", "N/A"
+                    if point:
+                        if 'actual_date' in point:
+                            p_date = point['actual_date']
+                            date_str = p_date.strftime('%y%m%d') if hasattr(p_date, 'strftime') else str(p_date)
+                        if 'value' in point:
+                            p_val = point['value']
+                            val_str = f"{p_val:.0f}" if isinstance(p_val, (int, float)) else str(p_val)
+                    point_details_parts.append(f"{p_key}({val_str}):{date_str}")
+                points_log_str = ", ".join(point_details_parts)
 
-                        if not any(isinstance(d, HeadAndShouldersDetector) and d.P1 and d.P1.get('index') == p1.get('index') for d in self.active_detectors):
-                            p1_date_str = p1.get('actual_date', pd.Timestamp('NaT')).strftime('%y%m%d') if isinstance(p1.get('actual_date'), pd.Timestamp) else 'N/A'
-                            logger.info(f"[{log_date}] H&S 패턴 후보 감지. P1={p1_date_str}, Completion Mode='{completion_mode}'")
+                logger.info( # 또는 logger.debug
+                    f"H&S/IHS 그룹(앵커 날짜: {anchor_date_str}) 경쟁 결과: 총 {len(lst)}개 후보 중 "
+                    f"최고점({winner_score:.2f}) 후보 선정. [구조: {points_log_str}]"
+                )
+                # ---- 여기까지 대체 ----
+                
+                selected_candidates.append(winner_candidate)
 
-                            # Detector 생성 시 completion_mode 전달
-                            # 추가: 수집된 V1(있을 경우) 정보를 메타로 전달하기 위해 생성자에 P1만 전달한 뒤 속성으로 할당
-                            detector = HeadAndShouldersDetector(p1, self.data, peaks, valleys, completion_mode=completion_mode)
-                            # V1 정보가 수집되어 있으면 detector에 할당(추후 활용 가능)
-                            if v1 and not detector.is_failed():
-                                detector.V1 = v1
-                            if not detector.is_failed():
-                                detector.V2 = v2; detector.P2 = p2; detector.V3 = v3
-                                detector.stage = "RightNecklineValleyDetected" # V3까지 찾음, P3 탐색 및 검증 단계
-                                self.active_detectors.append(detector)
-                            else:
-                                if detector not in self.failed_detectors: self.failed_detectors.append(detector)
+        for structural_points in selected_candidates:
+            pattern_type = structural_points.get('pattern_type')
 
+            # ---- 재탐지 방지: 이미 완성된 앵커면 감지기 생성 스킵 ----
+            try:
+                current_anchor_key = None
+                if pattern_type == 'HS':
+                    anchor_index = int(structural_points.get('V3', {}).get('index')) if structural_points.get('V3') else None
+                    if anchor_index is not None:
+                        current_anchor_key = ('HS', anchor_index)
                 elif pattern_type == 'IHS':
-                    p1 = structural_points.get('P1')
-                    v1 = structural_points.get('V1')
-                    p2 = structural_points.get('P2')
-                    v2 = structural_points.get('V2')
-                    p3 = structural_points.get('P3')
+                    anchor_index = int(structural_points.get('P3', {}).get('index')) if structural_points.get('P3') else None
+                    if anchor_index is not None:
+                        current_anchor_key = ('IHS', anchor_index)
 
-                    # logger.debug(f"[{log_date}] Checking IHS candidate: V1={v1.get('index')} P2={p2.get('index')} V2={v2.get('index')} P3={p3.get('index')}") # 디버깅 필요 시 활성화
+                if current_anchor_key and current_anchor_key in getattr(self, 'completed_pattern_anchors', []):
+                    logger.debug(f"H&S/IHS: 이미 완성된 앵커 {current_anchor_key} → 감지기 생성을 건너뜀")
+                    continue
+            except Exception:
+                # 앵커 키 생성 실패 시 필터를 강제하지 않음 (로버스트)
+                pass
 
-                    if not all([p1,v1, p2, v2, p3]):
-                         # logger.warning(f"[{log_date}] IHS 구조적 포인트 식별 실패.")
-                         return
+            if pattern_type == 'HS':
+                p1 = structural_points.get('P1')
+                if p1 and not any(isinstance(d, HeadAndShouldersDetector) and d.P1 and d.P1.get('index') == p1.get('index') for d in self.active_detectors):
+                    # 생성 트리거의 detected_date를 creation_event_date로 전달
+                    creation_date = all_extremums[-1].get('detected_date', pd.Timestamp.now())
+                    detector = HeadAndShouldersDetector(p1, self.data, creation_event_date=creation_date, peaks=peaks, valleys=valleys, completion_mode=completion_mode)
+                    if not detector.is_failed():
+                        detector.V1 = structural_points.get('V1')
+                        detector.P1 = structural_points.get('P1')
+                        detector.V2 = structural_points.get('V2')
+                        detector.P2 = structural_points.get('P2')
+                        detector.V3 = structural_points.get('V3')
+                        detector.P3 = structural_points.get('P3')
+                        detector.stage = "AwaitingCompletion"
+                        self.active_detectors.append(detector)
+                        
+                        # 로그 생성
+                        points = [get_point_str(detector.V1, 'V1'), get_point_str(detector.P1, 'P1'),
+                                    get_point_str(detector.V2, 'V2'), get_point_str(detector.P2, 'P2'),
+                                    get_point_str(detector.V3, 'V3'), get_point_str(detector.P3, 'P3')]
+                        points_str = ", ".join(points)
 
-                    # 2. 기본 가격 조건 검증 (V2 < V1 만 확인)
-                    is_valid = True
-                    # 검증 1: V2 < V1
-                    if not (v2.get('value', np.inf) < v1.get('value', np.inf)):
-                        is_valid = False; logger.debug(f"[{log_date}] IHS Initial Rule Fail: V2({v2.get('value'):.0f}) >= V1({v1.get('value'):.0f})")
-                    # --- P3 vs P2 몸통 검증 로직 제거됨 ---
+                        logger.info(f"[{all_extremums[-1].get('detected_date', pd.Timestamp.now()).strftime('%Y-%m-%d')}] H&S 패턴(선정) 후보 감지. [구조: {points_str}]")
+                        
+                        
+            elif pattern_type == 'IHS':
+                v1 = structural_points.get('V1')
+                if v1 and not any(isinstance(d, InverseHeadAndShouldersDetector) and d.V1 and d.V1.get('index') == v1.get('index') for d in self.active_detectors):
+                    creation_date = all_extremums[-1].get('detected_date', pd.Timestamp.now())
+                    detector = InverseHeadAndShouldersDetector(v1, self.data, creation_event_date=creation_date, peaks=peaks, valleys=valleys, completion_mode=completion_mode)
+                    if not detector.is_failed():
+                        detector.P1_ihs = structural_points.get('P1')
+                        detector.V1_ihs = structural_points.get('V1')
+                        detector.P2_ihs = structural_points.get('P2')
+                        detector.V2_ihs = structural_points.get('V2')
+                        detector.P3_ihs = structural_points.get('P3')
+                        detector.V3_ihs = structural_points.get('V3')
+                        detector.stage = "AwaitingCompletion"
+                        self.active_detectors.append(detector)
+                        
+                        points = [get_point_str(detector.P1_ihs, 'P1'), get_point_str(detector.V1_ihs, 'V1'),
+                                    get_point_str(detector.P2_ihs, 'P2'), get_point_str(detector.V2_ihs, 'V2'),
+                                    get_point_str(detector.P3_ihs, 'P3'), get_point_str(detector.V3_ihs, 'V3')]
+                        points_str = ", ".join(points)
+                        logger.info(f"[{all_extremums[-1].get('detected_date', pd.Timestamp.now()).strftime('%Y-%m-%d')}] IHS 패턴(선정) 후보 감지. [구조: {points_str}]")
+                        
 
-                        # 3. 유효성 검증 통과 시 감지기 생성 시도
-                    if is_valid:
-                        # 동일한 V1으로 시작하는 활성 IH&S 감지기가 없는지 확인
-                        # NOTE: 이전에는 P3가 반드시 'js_peak'여야 한다는 강제 필터가 있었습니다.
-                        # 해당 필터는 제거(주석 처리)하여 TrendDetector가 보고하는 provisional 극점으로도
-                        # IH&S 탐색을 시작할 수 있도록 합니다. (신뢰도 기반 필터링은 _find_hs_ihs_structural_points에서 수행됨)
-                        # if p3.get('type') != 'js_peak':
-                        #     logger.debug(f"[{log_date}] Skip IHS creation: P3 is not js_peak (type={p3.get('type')}). Awaiting future js_peak.")
-                        #     return
+    def get_debug_attempts(self) -> List[Dict]:
+        """
+        ✨ 디버깅용: 모든 시도된 패턴 조합들을 반환
+        차트 시각화나 분석에 활용 가능
+        """
+        return getattr(self, '_debug_all_attempts', [])
 
-                        if not any(isinstance(d, InverseHeadAndShouldersDetector) and d.V1 and d.V1.get('index') == v1.get('index') for d in self.active_detectors):
-                            v1_date_str = v1.get('actual_date', pd.Timestamp('NaT')).strftime('%y%m%d') if isinstance(v1.get('actual_date'), pd.Timestamp) else 'N/A'
-                            logger.info(f"[{log_date}] IH&S 패턴 후보 감지. V1={v1_date_str}, Completion Mode='{completion_mode}'")
+    def print_debug_attempts(self, limit: int = 5):
+        """
+        ✨ 디버깅용: 성공한 패턴 조합들을 날짜와 함께 출력
+        """
+        attempts = self.get_debug_attempts()
+        successful = [a for a in attempts if a['eval_result']]
 
-                            # Detector 생성 시 completion_mode 전달
-                            detector = InverseHeadAndShouldersDetector(v1, self.data, peaks, valleys, completion_mode='aggressive')
-                            if not detector.is_failed():
-                                detector.P2_ihs = p2; detector.V2_ihs = v2; detector.P3_ihs = p3
-                                detector.stage = "RightNecklinePeakDetected" # P3까지 찾음, V3 탐색 및 검증 단계
-                                self.active_detectors.append(detector)
-                            else:
-                                if detector not in self.failed_detectors: self.failed_detectors.append(detector)
+        if not successful:
+            print("성공한 패턴 조합이 없습니다.")
+            return
 
-            except KeyError as e:
-                logger.error(f"[{log_date}] H&S/IH&S 후보 검증 중 키 오류: {e}. 극점 정보 확인 필요.")
-            except TypeError as e:
-                logger.error(f"[{log_date}] H&S/IH&S 후보 검증 중 타입 오류: {e}. 극점 정보 확인 필요.")
-            except Exception as e:
-                logger.error(f"[{log_date}] H&S/IH&S 후보 검증 중 예외 발생: {e}")
+        print(f"성공한 패턴 조합 ({len(successful)}개):")
+        for i, attempt in enumerate(successful[:limit]):
+            print(f"\n[{i+1}] {attempt['mapping']['pattern_type']} 패턴")
+
+            # 포인트 정보를 날짜와 함께 표시 (연월일)
+            points_info = []
+            for p in attempt['time_ordered']:
+                date = p.get('actual_date')
+                date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else 'N/A'
+                points_info.append(f"{p.get('index')}({date_str})")
+
+            print(f"  포인트: {points_info}")
+            print(f"  위치: pos={attempt['pos']}, 스킵={attempt['skips_left']}")
+
+    def clear_debug_attempts(self):
+        """
+        ✨ 디버깅용: 저장된 시도 기록을 초기화
+        """
+        if hasattr(self, '_debug_all_attempts'):
+            self._debug_all_attempts.clear()
 
     def add_detector(self, pattern_type: str, extremum: Dict, data: pd.DataFrame, js_peaks: List[Dict], js_valleys: List[Dict]):
         """DT/DB 감지기 추가 로직 (수정된 생성자 호출 방식)"""
@@ -1378,18 +1554,38 @@ class PatternManager:
                     logger.info(f"{log_prefix} Double Bottom 완성! {completion_details}")
                 elif isinstance(detector, HeadAndShouldersDetector):
                     completion_info = { 'date': candle['date'], 'price': candle['Close'], 'neckline': detector.neckline_level,
-                                        'V1': detector.V1, 'P1': detector.P1, 'V2': detector.V2, 'P2': detector.P2, 'V3': detector.V3, 'P3': detector.P3 }
+                                        'V1': detector.V1, 'P1': detector.P1, 'V2': detector.V2, 'P2': detector.P2, 'V3': detector.V3, 'P3': detector.P3,
+                                        'mode': getattr(detector, 'completion_mode', 'neckline') }
                     self.completed_hs.append(completion_info)
                     p1_date_str = detector.P1.get('actual_date','N/A').strftime('%y%m%d') if detector.P1 and isinstance(detector.P1.get('actual_date'), pd.Timestamp) else 'N/A'
                     completion_details = f"H&S 시작 P1: {p1_date_str}"
                     logger.info(f"{log_prefix} Head and Shoulders 완성! {completion_details}")
+                    # ---- 앵커 저장: HS는 V3 인덱스를 기준으로 저장 ----
+                    try:
+                        if detector.V3 and 'index' in detector.V3:
+                            anchor_key = ('HS', int(detector.V3.get('index')))
+                            if anchor_key not in self.completed_pattern_anchors:
+                                self.completed_pattern_anchors.append(anchor_key)
+                                logger.debug(f"H&S: 완성 앵커 저장 {anchor_key}")
+                    except Exception as e:
+                        logger.error(f"H&S 앵커 저장 오류: {e}")
                 elif isinstance(detector, InverseHeadAndShouldersDetector):
                     completion_info = { 'date': candle['date'], 'price': candle['Close'], 'neckline': detector.neckline_level,
-                                        'P1': detector.P1, 'V1': detector.V1, 'P2': detector.P2_ihs, 'V2': detector.V2_ihs, 'P3': detector.P3_ihs, 'V3': detector.V3_ihs }
+                                        'P1': detector.P1_ihs, 'V1': detector.V1_ihs, 'P2': detector.P2_ihs, 'V2': detector.V2_ihs, 'P3': detector.P3_ihs, 'V3': detector.V3_ihs,
+                                        'mode': getattr(detector, 'completion_mode', 'neckline') }
                     self.completed_ihs.append(completion_info)
-                    v1_date_str = detector.V1.get('actual_date','N/A').strftime('%y%m%d') if detector.V1 and isinstance(detector.V1.get('actual_date'), pd.Timestamp) else 'N/A'
+                    v1_date_str = detector.V1_ihs.get('actual_date','N/A').strftime('%y%m%d') if detector.V1_ihs and isinstance(detector.V1_ihs.get('actual_date'), pd.Timestamp) else 'N/A'
                     completion_details = f"IH&S 시작 V1: {v1_date_str}"
                     logger.info(f"{log_prefix} Inverse Head and Shoulders 완성! {completion_details}")
+                    # ---- 앵커 저장: IHS는 P3 인덱스를 기준으로 저장 ----
+                    try:
+                        if detector.P3_ihs and 'index' in detector.P3_ihs:
+                            anchor_key = ('IHS', int(detector.P3_ihs.get('index')))
+                            if anchor_key not in self.completed_pattern_anchors:
+                                self.completed_pattern_anchors.append(anchor_key)
+                                logger.debug(f"IHS: 완성 앵커 저장 {anchor_key}")
+                    except Exception as e:
+                        logger.error(f"IHS 앵커 저장 오류: {e}")
 
                 # 완성된 감지기는 활성 리스트에서 제거
                 if detector in self.active_detectors:

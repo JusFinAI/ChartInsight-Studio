@@ -16,10 +16,15 @@ from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config im
 # Band tolerance for dynamic band sizing (e.g. 0.05 = 5%)
 BAND_TOLERANCE = 0.2
 
-# 모듈 폴더 아래 logs 디렉토리를 기본으로 사용하도록 지정
+# ===== 로깅 설정 (개선된 방식) =====
 from pathlib import Path
+
+# 모듈별 로그 디렉토리 설정
 MODULE_LOGS_DIR = Path(__file__).resolve().parent / "logs"
-logger = configure_logger(__name__, log_file_prefix="chart_pattern_analyzer_v3", logs_dir=MODULE_LOGS_DIR, level=logging.INFO)
+
+# 공통 백엔드 로거 사용 (main_dashboard.py에서 backend_events.log로 설정됨)
+# configure_logger를 사용하지 않고 getLogger만 사용 (이미 main_dashboard.py에서 설정됨)
+logger = logging.getLogger('backend')
     
 
 # Import refactored components (TrendDetector and PatternManager)
@@ -41,8 +46,8 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
     Returns:
         Dict[str, Any]: 분석 결과 딕셔너리
     """
-    # 로거 가져오기 (analysis_engine 상단에 정의된 logger 사용)
-    logger = logging.getLogger(__name__) # 또는 get_logger(...) 사용
+    # 공통 백엔드 로거 사용 (이미 상단에서 설정됨)
+    # logger = logging.getLogger(__name__) # 또는 get_logger(...) 사용
     
     # 분석 대상 정보 로깅
     analysis_info = f"티커={ticker or '알 수 없음'}, 기간={period or '알 수 없음'}, 타임프레임={interval or '알 수 없음'}"
@@ -104,7 +109,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
             logger.error(f"데이터 인덱싱 오류: index={i}")
             continue
         
-        if current_date.date() == pd.Timestamp('2025-05-12').date():
+        if current_date.date() == pd.Timestamp('2024-12-20').date():
             logger.debug(f"디버그 날짜: {current_date.strftime('%Y-%m-%d')}")
 
 
@@ -120,18 +125,21 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
         # 3. 신규 패턴 감지기 생성 시도 (극점 타입 확인 로직 포함)
         new_extremum = detector.newly_registered_peak or detector.newly_registered_valley
         if new_extremum:
-            # H&S/IHS는 구조적 복잡성을 고려하여 모든 새로운 극점 발생 시 재탐색
+            # H&S/IHS 직접 호출 블록 전체 삭제 – check_for_hs_ihs_start로 중앙화
+            all_peaks = detector.js_peaks + detector.secondary_peaks
+            all_valleys = detector.js_valleys + detector.secondary_valleys
             manager.check_for_hs_ihs_start(
-                detector.js_peaks + detector.secondary_peaks,
-                detector.js_valleys + detector.secondary_valleys
+                peaks=all_peaks,
+                valleys=all_valleys,
+                newly_registered_peak=detector.newly_registered_peak,
+                newly_registered_valley=detector.newly_registered_valley,
+                completion_mode='neckline',
+                current_index=i
             )
 
             # DT/DB는 'confirmed' 또는 'provisional' 신뢰도 등급을 시작점으로 허용
             confidence = new_extremum.get('confidence', '') if isinstance(new_extremum, dict) else ''
             if confidence in ['confirmed', 'provisional']:
-                all_peaks = detector.js_peaks + detector.secondary_peaks
-                all_valleys = detector.js_valleys + detector.secondary_valleys
-
                 if detector.newly_registered_peak:
                     manager.add_detector("DT", detector.newly_registered_peak, data, all_peaks, all_valleys)
                 if detector.newly_registered_valley:
@@ -162,7 +170,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
         'JS 뼈대 우선 방식'으로 최종 지그재그 리스트를 생성합니다.
         연속된 JS 극점 사이를 가장 적합한 Secondary 극점으로 연결하여 재구성합니다.
         """
-        logger = logging.getLogger(__name__)
+        # 이미 상단에서 설정된 공통 백엔드 로거 사용
         if not points:
             return []
 
@@ -238,7 +246,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
             best_flesh_point = find_best_intermediate_point(candidates, flesh_type_to_find)
             if best_flesh_point:
                 final_zigzag.append(best_flesh_point)
-                logger.info(f"뼈대 {prev_type}({start_idx})-{curr_type}({end_idx}) 사이를 {flesh_type_to_find}({best_flesh_point.get('index')})로 연결")
+                logger.debug(f"뼈대 {prev_type}({start_idx})-{curr_type}({end_idx}) 사이를 {flesh_type_to_find}({best_flesh_point.get('index')})로 연결")
             else:
                 # 적절한 살이 없으면 이는 논리적 오류로 간주하고 즉시 실패를 알린다.
                 candidate_indices = [int(p.get('index', -1)) for p in candidates]

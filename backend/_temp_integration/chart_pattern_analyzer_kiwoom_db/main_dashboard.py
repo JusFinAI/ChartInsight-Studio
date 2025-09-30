@@ -95,29 +95,20 @@ from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config im
 # create module-specific logs directory path (creation delegated to configure_logger)
 MODULE_LOG_DIR = SUBPROJECT_DIR / 'logs'
 
-# configure local logger to write into module log dir using centralized util
+# 1. 대시보드 로거 설정
 dashboard_logger = configure_logger("chartinsight.dashboard", log_file_prefix="dash_app_db", logs_dir=MODULE_LOG_DIR, level=logging.INFO)
 
-# 프로젝트 주요 이벤트(운영) 로그 파일 생성: INFO 레벨
-# 엔트리포인트에서 백엔드 전역 이벤트를 기록할 별도 파일을 만듭니다.
-configure_logger(
+# 2. 공통 백엔드 로거 설정 (patterns.py, trend.py, run_full_analysis.py 등에서 사용)
+# 이 로거는 backend_events.log 파일을 생성합니다
+backend_logger = configure_logger(
     logger_name="backend",
     log_file_prefix="backend_events",
     logs_dir=MODULE_LOG_DIR,
-    level=logging.DEBUG,
+    level=logging.INFO,
 )
 
-# 알고리즘(엔진) 상세 로그 파일 생성: DEBUG 레벨
-# run_full_analysis의 자세한 디버깅/분석 로그를 별도 파일로 분리합니다.
-configure_logger(
-    logger_name="backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis",
-    log_file_prefix="algorithm_run",
-    logs_dir=MODULE_LOG_DIR,
-    level=logging.DEBUG,
-)
-
-# 분석 엔진의 기본 로깅 레벨(콘솔)는 위에서 파일 핸들러를 등록했으므로 추가로 조정
-logging.getLogger('backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis').setLevel(logging.INFO)
+dashboard_logger.info("🚀 Logging system initialized successfully")
+backend_logger.info("🔧 Backend common logger configured for patterns.py, trend.py, run_full_analysis.py")
 
 # backend 모듈들의 불필요한 로그 파일 생성 방지
 logging.getLogger('chartinsight-api.data_loader').disabled = True
@@ -799,6 +790,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
     if 'show_hs_ihs' in selected_options:
         # HS 부분
         completed_hs = patterns.get("completed_hs", [])
+        #completed_hs = [patterns.get("completed_hs", [])[0]] if patterns.get("completed_hs") else []
         if completed_hs:
             hs_dates = [pd.Timestamp(p['date']) for p in completed_hs]
             fig.add_trace(go.Scatter(
@@ -818,6 +810,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     p2 = hs.get('P2')
                     v3 = hs.get('V3')
                     p3 = hs.get('P3')
+                    mode = hs.get('mode', 'neckline')
 
                     # compute start_date with fallbacks (include V1/P1 first so left-shoulder is inside box)
                     start_date = None
@@ -967,12 +960,16 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                                 y_at_end = max(min(y_at_end, box_y1), box_y0)
                             except Exception:
                                 pass
-                            shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=v2_date, y0=v2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#FF6B8A', width=1.2, dash='dash'), layer='above'))
+                            if mode == 'aggressive':
+                                shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=v2_date, y0=v2_val, x1=v3_date, y1=v3_val, line=dict(color='#FF6B8A', width=1.2, dash='dash'), layer='above'))
+                            else:
+                                shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=v2_date, y0=v2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#FF6B8A', width=1.2, dash='dash'), layer='above'))
                 except Exception as hs_err:
                     logger.warning(f"HS 요소 생성 오류: {hs_err}")
 
         # IHS 부분
         completed_ihs = patterns.get("completed_ihs", [])
+        # completed_ihs = [patterns.get("completed_ihs", [])[1]] if len(patterns.get("completed_ihs", [])) > 1 else []
         if completed_ihs:
             ihs_dates = [pd.Timestamp(p['date']) for p in completed_ihs]
             fig.add_trace(go.Scatter(
@@ -992,6 +989,7 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                     v2 = ihs.get('V2')
                     p3 = ihs.get('P3')
                     v3 = ihs.get('V3')
+                    mode = ihs.get('mode', 'neckline')
                     
                     # 패턴 시작과 끝 날짜 확인
                     # Prefer to start the IHS box after the left-shoulder points
@@ -1073,7 +1071,10 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
                                     y_at_end = max(min(y_at_end, box_y1), box_y0)
                                 except Exception:
                                     pass
-                                shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
+                                if mode == 'aggressive':
+                                    shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=p3_date, y1=p3_val, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
+                                else:
+                                    shapes_to_draw.append(go.layout.Shape(type='line', xref='x', yref='y', x0=p2_date, y0=p2_val, x1=adjusted_end, y1=y_at_end, line=dict(color='#4CAF50', width=1.2, dash='dash'), layer='above'))
                 except Exception as ihs_err:
                     logger.warning(f"IHS 요소 생성 오류: {ihs_err}")
 
@@ -1169,13 +1170,13 @@ def update_graph(n_clicks, selected_options, selected_indicators, ticker, interv
 
 if __name__ == '__main__':
     logger.info('=== DB-backed Dash 앱 시작 ===')
-    logger.info('UI 준비 완료: http://localhost:8055')
-    print('🌐 브라우저에서 http://localhost:8055 으로 접속하세요!')
+    logger.info('UI 준비 완료: http://localhost:8058')
+    print('🌐 브라우저에서 http://localhost:8058 으로 접속하세요!')
     # Start standalone app
     try:
         # app is defined earlier in this file (standalone implementation)
-        app.run(debug=True, host='127.0.0.1', port=8055, use_reloader=False)
+        app.run(debug=True, host='127.0.0.1', port=8058, use_reloader=False)
     except TypeError:
-        app.run(debug=True, host='127.0.0.1', port=8055)
+        app.run(debug=True, host='127.0.0.1', port=8058)
 
 

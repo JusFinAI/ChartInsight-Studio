@@ -55,11 +55,13 @@ def create_dropdown_options(stock_data: Dict) -> List[Dict]:
             })
     
     # 삼성전자(005930)를 맨 앞에, 나머지는 종목코드 순으로 정렬
-    samsung_options = [opt for opt in options if opt['value'] == '005930']
-    other_options = [opt for opt in options if opt['value'] != '005930']
+    selected_code = '005930'   # 삼성전자(005930) SK하이닉스(000660)
+    selected_options = [opt for opt in options if opt['value'] == selected_code]
+    other_options = [opt for opt in options if opt['value'] != selected_code]
+    
     other_options.sort(key=lambda x: x['value'])
     
-    options = samsung_options + other_options
+    options = selected_options + other_options
     
     return options
 
@@ -113,7 +115,9 @@ def get_default_values() -> Tuple[str, str, str]:
     """
     # 삼성전자를 기본값으로 설정
     default_category = 'KOSPI'
-    default_ticker = '005930'  # 삼성전자
+    #default_ticker = '005930'  # 삼성전자
+    default_ticker = '000270'  # 기아   
+    
     default_interval = '1d'     # 일봉
     
     return default_category, default_ticker, default_interval
