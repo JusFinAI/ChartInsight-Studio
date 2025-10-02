@@ -10,14 +10,10 @@ import pandas as pd
 import logging
 
 
-# Use the local, bundled engine implementation by default
-from backend.app.crud import get_candles, get_latest_candles
-# Use the local, bundled engine implementation by default
-# Use the refactored orchestrator module (run_full_analysis.py)
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.run_full_analysis import run_full_analysis
+from run_full_analysis import run_full_analysis
 
 # 로컬 logger_config 사용 (절대 import로 통일)
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config import configure_logger
+from logger_config import configure_logger
 
 logger = configure_logger(__name__, log_file_prefix="chart_pattern_analyzer_v3", level=logging.INFO)
 

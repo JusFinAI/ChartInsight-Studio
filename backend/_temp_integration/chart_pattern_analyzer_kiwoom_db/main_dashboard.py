@@ -42,7 +42,7 @@ ROOT, BACKEND_DIR, SUBPROJECT_DIR = ensure_project_paths()
 
 
 # --- DB 기반 래퍼: 원본 download_data 및 run_full_analysis을 DB 분석기로 교체
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.analysis import run_analysis_from_df
+from analysis import run_analysis_from_df
 from backend.app.database import SessionLocal
 from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.data_loader import load_candles_from_db
 import pandas as pd
@@ -53,7 +53,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 독립 실행 레이아웃용 한국 종목 로더 헬퍼
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.korean_stock_loader import (
+from korean_stock_loader import (
     get_category_options, get_symbols_by_category, get_interval_options, get_default_values
 )
 

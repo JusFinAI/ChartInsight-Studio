@@ -28,8 +28,8 @@ logger = logging.getLogger('backend')
     
 
 # Import refactored components (TrendDetector and PatternManager)
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.trend import TrendDetector
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.patterns import PatternManager
+from trend import TrendDetector
+from patterns import PatternManager
 
 
 def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None, interval: str = None) -> Dict[str, Any]:
