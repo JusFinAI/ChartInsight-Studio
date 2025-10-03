@@ -717,16 +717,16 @@ class PatternManager:
         """DT/DB 감지기 추가 로직 (수정된 생성자 호출 방식)"""
         detector = None
         
-        # trend_detector가 있으면 그 복사본 사용, 없으면 전달된 js_peaks/js_valleys 복사본 사용
-        if hasattr(self, 'trend_detector') and self.trend_detector:
-            peaks_arg = self.trend_detector.js_peaks.copy() if self.trend_detector.js_peaks else []
-            valleys_arg = self.trend_detector.js_valleys.copy() if self.trend_detector.js_valleys else []
-            logger.info(f"add_detector 동기화 (trend): peaks={len(peaks_arg)}, valleys={len(valleys_arg)}")
-        else:
-            peaks_arg = js_peaks.copy() if js_peaks else []
-            valleys_arg = js_valleys.copy() if js_valleys else []
-            logger.warning("add_detector 대체 동작: trend_detector가 연결되어 있지 않아 전달된 js_peaks/js_valleys의 복사본을 사용합니다. 이는 동기화 타이밍 버그를 숨길 수 있으니 개발 환경에서는 strict 모드 권장.")
-
+        # 개발 중: 엄격 검사(예외 발생)
+        if not isinstance(js_peaks, list):
+            raise TypeError(f"add_detector: js_peaks must be list, got {type(js_peaks).__name__}")
+        if not isinstance(js_valleys, list):
+            raise TypeError(f"add_detector: js_valleys must be list, got {type(js_valleys).__name__}")
+        # 이후에는 안전하게 복사/사용
+        peaks_arg = js_peaks.copy()
+        valleys_arg = js_valleys.copy()
+        
+        
         try: # 감지기 생성 중 발생할 수 있는 오류 처리
             if pattern_type == "DB":
                 detector = DoubleBottomDetector(extremum, self.data, peaks_arg, valleys_arg)
