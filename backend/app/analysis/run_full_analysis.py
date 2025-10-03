@@ -11,7 +11,7 @@ from datetime import datetime
 
 # Avoid import-time side effects for logging. Application entrypoint should
 # call configure_logger(...) if file handlers are required.
-from backend._temp_integration.chart_pattern_analyzer_kiwoom_db.logger_config import configure_logger
+from app.utils.logger_config import get_logger
 
 # Band tolerance for dynamic band sizing (e.g. 0.05 = 5%)
 BAND_TOLERANCE = 0.2
@@ -24,12 +24,12 @@ MODULE_LOGS_DIR = Path(__file__).resolve().parent / "logs"
 
 # 공통 백엔드 로거 사용 (main_dashboard.py에서 backend_events.log로 설정됨)
 # configure_logger를 사용하지 않고 getLogger만 사용 (이미 main_dashboard.py에서 설정됨)
-logger = logging.getLogger('backend')
+logger = get_logger("chartinsight-api.analysis", "analysis_engine")
     
 
 # Import refactored components (TrendDetector and PatternManager)
-from trend import TrendDetector
-from patterns import PatternManager
+from .trend import TrendDetector
+from .patterns import PatternManager
 
 
 def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None, interval: str = None) -> Dict[str, Any]:
@@ -109,7 +109,7 @@ def run_full_analysis(data: pd.DataFrame, ticker: str = None, period: str = None
             logger.error(f"데이터 인덱싱 오류: index={i}")
             continue
         
-        if current_date.date() == pd.Timestamp('2023-09-25').date():
+        if current_date.date() == pd.Timestamp('2024-12-20').date():
             logger.debug(f"디버그 날짜: {current_date.strftime('%Y-%m-%d')}")
 
 

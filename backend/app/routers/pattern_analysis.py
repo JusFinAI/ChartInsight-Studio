@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from app.utils.logger_config import get_logger
 from sqlalchemy.orm import Session
 
+from app.analysis.run_full_analysis import run_full_analysis
+
 # 통합 분석 엔진 및 응답 스키마
 
 # 라우터 로거 설정
@@ -433,8 +435,8 @@ async def get_patterns(
 
             # Run analysis engine to get patterns
             try:
-                from app.analysis.engine_impl import run_full_analysis as run_full_analysis_impl
-                ref_res = run_full_analysis_impl(df, ticker=symbol, period=period or "MAX", interval=timeframe)
+                
+                ref_res = run_full_analysis(df, ticker=symbol, period=period or "MAX", interval=timeframe)
             except Exception as e:
                 logger.error(f"패턴 엔진 실행 실패: {e}")
                 # fallback to sample
@@ -879,11 +881,11 @@ async def get_trading_radar_data(
             trend_periods_json = []
             trend_info = {}
 
-            # 항상 V3 엔진에 위임하여 결과를 사용합니다. (폴백 로직 제거)
-            from app.analysis.engine_impl import run_full_analysis as run_full_analysis_impl
+            
+            
 
             # Call engine_impl and extract fields
-            ref_res = run_full_analysis_impl(df, ticker=symbol, period=period or "MAX", interval=timeframe)
+            ref_res = run_full_analysis(df, ticker=symbol, period=period or "MAX", interval=timeframe)
             pv = ref_res.get("peaks_valleys", {})
             js_peaks = pv.get("js_peaks", [])
             js_valleys = pv.get("js_valleys", [])

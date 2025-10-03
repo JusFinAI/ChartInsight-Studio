@@ -4,8 +4,8 @@ from .double_patterns import DoubleTopDetector, DoubleBottomDetector
 from .hs_patterns import HeadAndShouldersDetector, InverseHeadAndShouldersDetector
 import pandas as pd
 
-import logging
-logger = logging.getLogger('backend')
+from app.utils.logger_config import get_logger
+logger = get_logger("chartinsight-api.analysis", "analysis_engine")
 
 class PatternManager:
     def __init__(self, data, tolerance: Optional[float] = None):

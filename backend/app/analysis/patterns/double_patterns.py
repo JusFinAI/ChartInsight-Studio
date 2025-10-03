@@ -1,8 +1,7 @@
 from .base import PatternDetector
 import pandas as pd
-import logging
-
-logger = logging.getLogger('backend')
+from app.utils.logger_config import get_logger
+logger = get_logger("chartinsight-api.analysis", "analysis_engine")
 
 class DoubleBottomDetector(PatternDetector):
     
