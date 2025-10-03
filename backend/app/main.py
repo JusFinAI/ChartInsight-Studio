@@ -2,43 +2,23 @@
 
 import time
 import uuid
-import os
+import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import logging
-import sys
-from logging.handlers import RotatingFileHandler
+
+# === 로깅 시스템 초기화 (앱 시작 시 가장 먼저 실행) ===
+from app.utils.logger_config import setup_logging
+
+# 로깅 시스템 설정 (전체 앱에서 한 번만 실행)
+setup_logging(log_level="INFO")
+
+# 이후 모든 모듈에서 표준 방식으로 로거 사용
+logger = logging.getLogger(__name__)
+
 # 라우터 임포트
 from app.routers import pattern_analysis
-
-# 중앙 로깅 설정 사용
-from app.utils.logger_config import get_logger
-
-# 로거 설정
-logger = get_logger("chartinsight-api", "api")
-
-# 기존 로그 파일 정리 (30일 이상 지난 로그 파일 삭제)
-def cleanup_old_logs(logs_directory, days_to_keep=30):
-    """오래된 로그 파일을 삭제합니다"""
-    current_time = time.time()
-    max_age = days_to_keep * 86400  # 일 -> 초 변환
-    
-    for filename in os.listdir(logs_directory):
-        if filename.startswith("api_") and filename.endswith(".log"):
-            file_path = os.path.join(logs_directory, filename)
-            file_age = current_time - os.path.getmtime(file_path)
-            
-            if file_age > max_age:
-                try:
-                    os.remove(file_path)
-                    logger.info(f"오래된 로그 파일 삭제: {filename}")
-                except Exception as e:
-                    logger.error(f"로그 파일 삭제 실패: {filename}, 에러: {str(e)}")
-
-# 오래된 로그 파일 정리
-cleanup_old_logs("logs")
 
 # FastAPI 앱 인스턴스 생성
 app = FastAPI(title="ChartInsight API")
@@ -76,7 +56,8 @@ async def log_requests(request: Request, call_next):
         return response
     except Exception as e:
         process_time = time.time() - start_time
-        logger.error(f"Request {request_id} failed: {str(e)} - {process_time:.3f} sec")
+        # 예외 발생 시 전체 스택 트레이스를 로그에 자동 기록
+        logger.exception(f"Request {request_id} failed - {process_time:.3f} sec")
         return JSONResponse(
             status_code=500,
             content={"message": "Internal server error"}

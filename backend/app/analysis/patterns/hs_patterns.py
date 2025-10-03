@@ -3,9 +3,9 @@ import logging
 from typing import Optional
 from .base import PatternDetector
 
-from app.utils.logger_config import get_logger
-
-logger = get_logger("chartinsight-api.analysis", "analysis_engine")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 class HeadAndShouldersDetector(PatternDetector):
     """Head and Shoulders 패턴 감지기 (수정 V4 - 규칙 변경 및 옵션 추가)"""

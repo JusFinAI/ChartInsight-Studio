@@ -14,15 +14,13 @@ from app.models import Stock, Candle
 from app.crud import get_latest_candles, get_candles, normalize_timeframe
 from app.services.data_loader import load_candles_from_db
 from zoneinfo import ZoneInfo
-from app.utils.logger_config import get_logger
 from sqlalchemy.orm import Session
 
 from app.analysis.run_full_analysis import run_full_analysis
 
-# 통합 분석 엔진 및 응답 스키마
-
-# 라우터 로거 설정
-logger = get_logger("chartinsight-api.pattern-analysis", "pattern_analysis")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/pattern-analysis",
@@ -519,16 +517,9 @@ async def get_patterns(
         return patterns
 
     except Exception as e:
-        # Log full traceback and write to temporary file for debugging
-        import traceback, pathlib
-        tb = traceback.format_exc()
-        logger.error(tb)
-        try:
-            pathlib.Path('/tmp/patterns_trace.log').write_text(tb)
-        except Exception as _write_err:
-            logger.warning(f"Failed writing trace file: {_write_err}")
-        # Return generic 500 but guide to trace file location for developer
-        raise HTTPException(status_code=500, detail="Internal server error. Server traceback written to /tmp/patterns_trace.log")
+        # 예외 발생 시 전체 스택 트레이스를 로그에 자동 기록
+        logger.exception("패턴 조회 중 예외 발생")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # 가격 레벨 API 수정
 @router.get("/price-levels", response_model=List[PriceLevelResponse])
@@ -1035,9 +1026,8 @@ async def get_trading_radar_data(
         logger.error(f"Trading Radar HTTP 예외: {e.status_code} - {e.detail}")
         raise e
     except Exception as e:
-        logger.error(f"Trading Radar 데이터 오류: {str(e)}")
-        import traceback
-        logger.error(f"스택 트레이스: {traceback.format_exc()}")
+        # 예외 발생 시 전체 스택 트레이스를 로그에 자동 기록
+        logger.exception("Trading Radar 데이터 조회 중 예외 발생")
         raise HTTPException(status_code=500, detail=f"오류 발생: {str(e)}") 
 
 

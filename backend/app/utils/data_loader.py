@@ -9,10 +9,10 @@ import os
 from datetime import datetime
 
 from app.utils.cache import data_cache
-from app.utils.logger_config import get_logger
 
-# 로거 설정
-logger = get_logger("chartinsight-api.data_loader", "data_loader")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 # 타임프레임별 최대 다운로드 가능 기간 (일 수)
 INTERVAL_MAX_DAYS = {

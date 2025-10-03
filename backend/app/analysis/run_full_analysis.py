@@ -3,28 +3,16 @@ import pandas as pd
 
 import time
 import logging
-import sys
 from dataclasses import dataclass, field
-from typing import List, Dict, Any,Optional, Tuple # 타입 힌팅 추가
-import os
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
-# Avoid import-time side effects for logging. Application entrypoint should
-# call configure_logger(...) if file handlers are required.
-from app.utils.logger_config import get_logger
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 # Band tolerance for dynamic band sizing (e.g. 0.05 = 5%)
 BAND_TOLERANCE = 0.2
-
-# ===== 로깅 설정 (개선된 방식) =====
-from pathlib import Path
-
-# 모듈별 로그 디렉토리 설정
-MODULE_LOGS_DIR = Path(__file__).resolve().parent / "logs"
-
-# 공통 백엔드 로거 사용 (main_dashboard.py에서 backend_events.log로 설정됨)
-# configure_logger를 사용하지 않고 getLogger만 사용 (이미 main_dashboard.py에서 설정됨)
-logger = get_logger("chartinsight-api.analysis", "analysis_engine")
     
 
 # Import refactored components (TrendDetector and PatternManager)

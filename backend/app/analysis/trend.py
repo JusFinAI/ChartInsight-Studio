@@ -1,13 +1,13 @@
 import numpy as np
 import pandas as pd
+import logging
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-# 공통 백엔드 로거 사용 (main_dashboard.py에서 backend_events.log로 설정됨)
 
-from app.utils.logger_config import get_logger
-
-logger = get_logger("chartinsight-api.analysis", "analysis_engine")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 
 

@@ -3,10 +3,9 @@ import pandas as pd
 import logging
 from typing import Optional
 
-# Use the central 'backend' logger so file-formatting is controlled centrally
-from app.utils.logger_config import get_logger
-
-logger = get_logger("chartinsight-api.analysis", "analysis_engine")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 class PatternDetector:
     """DT/DB/HS/IHS 패턴 감지기 기본 클래스"""

@@ -3,9 +3,11 @@ from .base import PatternDetector
 from .double_patterns import DoubleTopDetector, DoubleBottomDetector
 from .hs_patterns import HeadAndShouldersDetector, InverseHeadAndShouldersDetector
 import pandas as pd
+import logging
 
-from app.utils.logger_config import get_logger
-logger = get_logger("chartinsight-api.analysis", "analysis_engine")
+# === 로깅 설정 ===
+# main.py에서 이미 중앙 로깅이 설정되었으므로, 여기서는 단순히 로거를 가져옵니다.
+logger = logging.getLogger(__name__)
 
 class PatternManager:
     def __init__(self, data, tolerance: Optional[float] = None):
