@@ -87,10 +87,34 @@ class FinancialDataParser:
 
 # --- 4. 분석기 ---
 class CanslimAnalyzer:
+    
+    """
+    재무 데이터 DataFrame을 입력받아 EPS를 계산하고, CAN SLIM의 'C'와 'A' 기준을
+    분석하는 핵심 분석기 클래스.
+    """
+
+    """
+    분석기 클래스를 초기화합니다.
+
+    초기화 과정에서 `_calculate_eps` 메서드를 호출하여 원본 DataFrame에
+    계산된 EPS 데이터를 자동으로 추가합니다.
+    """
     def __init__(self, df: pd.DataFrame):
         self.df = self._calculate_eps(df)
+        
+        
 
     def _calculate_eps(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        순이익과 발행주식수 데이터를 사용하여 분기별 및 연간 EPS(주당순이익)를 계산합니다.
+
+        [핵심 로직]
+        1. 연간 사업보고서(Q4)에만 있는 발행주식수 정보를 이전 분기들(Q1, Q2, Q3)에 채워넣어(ffill)
+        모든 분기에서 EPS를 계산할 수 있도록 합니다.
+        2. '지배주주순이익 / 보통주 발행주식수' 공식으로 EPS를 계산합니다.
+        3. 계산된 EPS 데이터를 원본 DataFrame에 새로운 행으로 추가하여 반환합니다.
+        """
+    
         pivot_df = df.pivot_table(index=['year', 'quarter'], columns='account_id', values='amount', aggfunc='first').reset_index()
         if AccountIDs.NET_INCOME not in pivot_df.columns:
             return df
@@ -109,14 +133,20 @@ class CanslimAnalyzer:
         eps_df['account_id'] = 'EPS'
         return pd.concat([df, eps_df], ignore_index=True)
     
-    # ... (이하 분석 함수들은 이전 버전과 동일하게 작동)
+
     def get_eps_data(self, period: str = 'all') -> pd.DataFrame:
         eps_df = self.df[self.df["account_id"] == "EPS"].sort_values(by=["year", "quarter"])
         if period == 'annual':
             return eps_df[eps_df["quarter"] == "Q4"].reset_index(drop=True)
         return eps_df.reset_index(drop=True)
-    # ... (calculate_yoy_growth, check_criterion_c, check_criterion_a 등 동일)
+    
+
     def calculate_yoy_growth(self, eps_data: pd.DataFrame) -> Optional[float]:
+        """
+        가장 최근 분기의 EPS를 전년 동기 EPS와 비교하여 YoY(전년 동기 대비) 성장률을 계산합니다.
+        CAN SLIM의 'C' 기준을 검증하는 데 사용됩니다.
+        """
+    
         if len(eps_data) < 2: return None
         latest_q = eps_data.iloc[-1]
         prev_year_q = eps_data[(eps_data["year"] == latest_q["year"] - 1) & (eps_data["quarter"] == latest_q["quarter"])]
@@ -130,13 +160,27 @@ class CanslimAnalyzer:
         recent_years_eps = annual_eps_data.tail(num_years)
         return recent_years_eps["amount"].pct_change().dropna() * 100
 
+    
     def check_calculate_yoy_growth(self, min_growth_rate: float = 25.0) -> Dict:
+        """
+        CAN SLIM 'C' 기준(최근 분기 EPS 성장률)의 통과 여부를 검증합니다.
+        내부적으로 `calculate_yoy_growth`를 호출하여 얻은 성장률이 `min_growth_rate` 이상인지 확인합니다.
+        """
+        eps_data = self.get_eps_data()
+        growth_rate = self.calculate_yoy_growth(eps_data)
+        if growth_rate is None: return {"pass": False, "reason": "성장률 계산 불가"}
+        return {"pass": growth_rate >= min_growth_rate, "growth_rate": f"{growth_rate:.2f}%"}
+    
         eps_data = self.get_eps_data()
         growth_rate = self.calculate_yoy_growth(eps_data)
         if growth_rate is None: return {"pass": False, "reason": "성장률 계산 불가"}
         return {"pass": growth_rate >= min_growth_rate, "growth_rate": f"{growth_rate:.2f}%"}
 
+       
     def check_annual_growth_rates(self, num_years: int = 3, min_growth_rate: float = 25.0) -> Dict:
+        """
+        3년 연간 EPS 성장률을 계산하고, CAN SLIM의 'A' 기준을 검증합니다.
+        """
         annual_eps_data = self.get_eps_data('annual')
         if len(annual_eps_data) < num_years: return {"pass": False, "reason": f"{num_years}년치 연간 데이터 부족"}
         
