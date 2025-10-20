@@ -23,7 +23,7 @@ def configure_kst_logger(name: str, level: int = logging.INFO) -> logging.Logger
         handler.setFormatter(fmt)
         logger.addHandler(handler)
         # Prevent double logging to root handlers when basicConfig/root handlers are present
-        logger.propagate = False
+        logger.propagate = True
         logger.setLevel(level)
     return logger
 

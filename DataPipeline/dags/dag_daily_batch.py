@@ -28,13 +28,13 @@ DEFAULT_ARGS = {
 
 # --- 2. 개별 Task 함수 정의 (플레이스홀더: 추후 실제 로직으로 교체) ---
 def _sync_stock_master(**kwargs):
-    """독립적인 종목 마스터 정보 동기화 Task
+    """종목 마스터 정보 동기화 및 활성 종목 리스트 반환 Task
     
-    이 Task는 XCom을 반환하지 않으며, 메인 데이터 플로우와 독립적으로 동작합니다.
-    DB의 live.stocks 테이블을 외부 API와 동기화하여 메타데이터를 최신 상태로 유지합니다.
+    DB의 live.stocks 테이블을 외부 API와 동기화하여 메타데이터를 최신 상태로 유지하고,
+    후속 Task에서 사용할 활성 종목 리스트를 XCom으로 반환합니다.
     
     Returns:
-        None (XCom 반환 없음)
+        List[str]: 활성 종목 코드 리스트 (XCom으로 전달)
     """
     # params 컨텍스트에서 execution_mode 값 읽기
     execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
@@ -508,6 +508,8 @@ with DAG(
             """,
         )
 
+    # --- 5. Task 의존성 설정 ---
+    # 종목 마스터 동기화가 가장 먼저 실행되도록 의존성 설정
     run_technical_analysis_task = PythonOperator(
         task_id='run_technical_analysis',
         python_callable=_run_technical_analysis,
@@ -516,7 +518,10 @@ with DAG(
         - 목적: 기술적 지표/패턴 분석
         """,
     )
-
+    sync_stock_master_task >> update_analysis_target_flags_task
+    update_analysis_target_flags_task >> fetch_latest_low_frequency_candles_task
+    fetch_latest_low_frequency_candles_task >> [calculate_core_metrics_group, run_technical_analysis_task]
+    # ensure load_final_results_task is defined before referencing it
     load_final_results_task = PythonOperator(
         task_id='load_final_results',
         python_callable=_load_final_results,
@@ -526,10 +531,5 @@ with DAG(
         """,
     )
 
-    # --- 5. Task 의존성 설정 ---
-    # 종목 마스터 동기화가 가장 먼저 실행되도록 의존성 설정
-    sync_stock_master_task >> update_analysis_target_flags_task
-    update_analysis_target_flags_task >> fetch_latest_low_frequency_candles_task
-    fetch_latest_low_frequency_candles_task >> [calculate_core_metrics_group, run_technical_analysis_task]
     [calculate_core_metrics_group, run_technical_analysis_task] >> load_final_results_task
 

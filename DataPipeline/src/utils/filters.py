@@ -42,16 +42,8 @@ def apply_filter_zero(
     min_market_cap_억 = active_config.get("MIN_MARKET_CAP_KRW", 0)
     exclude_keywords = [k.lower() for k in active_config.get("EXCLUDE_KEYWORDS", [])]
 
-    def _safe_parse_number(value):
-        if value is None:
-            return None
-        s = str(value).replace(',', '').strip()
-        if s == '':
-            return None
-        try:
-            return float(s)
-        except (ValueError, TypeError):
-            return None
+    # apply_filter_zero는 이제 master_data_manager에서 숫자 타입으로 정규화된 값을 전달받음을 기대합니다.
+    # 따라서 문자열 파싱 로직은 제거하고 None/0 체크만 수행합니다.
 
     passed_stocks: List[Dict] = []
     for stock in stock_list:
@@ -63,27 +55,24 @@ def apply_filter_zero(
         if any(keyword in combined_text for keyword in exclude_keywords):
             continue
 
-        # 2) 시가총액 필터
+        # 2) 시가총액 필터 (입력은 이미 숫자형이어야 함)
+        last_price = stock.get('lastPrice') if 'lastPrice' in stock else stock.get('last_price')
+        list_count = stock.get('listCount') if 'listCount' in stock else stock.get('list_count')
+
+        if last_price is None or list_count is None:
+            # 필요한 숫자 데이터가 없으면 탈락
+            continue
+
         try:
-            last_price_raw = stock.get('lastPrice') or stock.get('last_price')
-            list_count_raw = stock.get('listCount') or stock.get('list_count')
-
-            last_price = _safe_parse_number(last_price_raw)
-            list_count = _safe_parse_number(list_count_raw)
-
-            if last_price is None or list_count is None:
-                # 필요한 숫자 데이터가 없으면 탈락
-                continue
-
+            # 이미 숫자 타입일 것을 가정 (master_data_manager에서 정규화)
             if last_price <= 0 or list_count <= 0:
                 continue
 
-            # 시가총액(억 원 단위)
-            market_cap_억 = (last_price * list_count) / 100_000_000
+            market_cap_억 = (float(last_price) * float(list_count)) / 100_000_000
             if market_cap_억 < min_market_cap_억:
                 continue
         except Exception:
-            # 안전을 위해 어떤 에러가 발생해도 탈락
+            # 타입 문제 등이 발생하면 탈락
             continue
 
         # 모두 통과

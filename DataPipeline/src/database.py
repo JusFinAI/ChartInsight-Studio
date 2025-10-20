@@ -67,10 +67,10 @@ class Stock(Base):
 
     stock_code = Column(String(20), primary_key=True, index=True)  # 종목코드 (기본키)
     stock_name = Column(String(100), index=True)  # 종목명
-    list_count = Column(String(20), nullable=True)  # 상장주식수
+    list_count = Column(BigInteger, nullable=True)  # 상장주식수 (정수형)
     audit_info = Column(String(50), nullable=True)  # 감사의견
     reg_day = Column(String(8), nullable=True)  # 등록일
-    last_price = Column(String(20), nullable=True)  # 현재가
+    last_price = Column(Numeric(12, 2), nullable=True)  # 현재가 (숫자형, 소수점 2자리)
     state = Column(Text, nullable=True)  # 종목 상태
     market_code = Column(String(20), nullable=True)  # 시장구분코드
     market_name = Column(String(50), nullable=True)  # 시장구분명

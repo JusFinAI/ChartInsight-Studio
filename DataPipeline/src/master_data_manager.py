@@ -17,7 +17,6 @@ from src.utils.logging_kst import configure_kst_logger
 
 logger = configure_kst_logger(__name__)
 
-
 def _fetch_all_stock_codes_from_api() -> List[Dict]:
     """
     Kiwoom API ka10099를 호출하여 전체 종목 정보를 조회합니다.
@@ -46,54 +45,54 @@ def _fetch_all_stock_codes_from_api() -> List[Dict]:
     return mapped_stocks
 
 
+def _normalize_price(price_str: str) -> float | None:
+    """문자열 가격을 안전하게 float으로 변환합니다."""
+    if price_str is None:
+        return None
+    try:
+        if isinstance(price_str, (int, float)):
+            return float(price_str)
+        s = str(price_str).replace(',', '').strip()
+        if s == '':
+            return None
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _normalize_count(count_str: str) -> int | None:
+    """문자열 수량을 안전하게 int로 변환합니다."""
+    if count_str is None:
+        return None
+    try:
+        if isinstance(count_str, int):
+            return int(count_str)
+        s = str(count_str).replace(',', '').strip()
+        if s == '':
+            return None
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def _map_api_response_to_stock_model(api_data: Dict) -> Dict:
-    """
-    ka10099 API 응답 데이터를 Stock 모델 컬럼명으로 매핑합니다.
-    
-    Args:
-        api_data (Dict): API 원본 응답 데이터
-        
-    Returns:
-        Dict: Stock 모델 컬럼명으로 매핑된 데이터
-        
-    Example:
-        API 응답:
-        {
-            'code': '005930',
-            'name': '삼성전자',
-            'listCount': '5969782550',
-            'marketName': 'KOSPI',
-            ...
-        }
-        
-        매핑 결과:
-        {
-            'code': '005930',           # filter.py가 사용
-            'name': '삼성전자',          # filter.py가 사용
-            'stock_name': '삼성전자',     # Stock 모델 컬럼
-            'list_count': '5969782550',
-            'marketName': 'KOSPI',      # filter.py가 사용
-            'market_name': 'KOSPI',     # Stock 모델 컬럼
-            ...
-        }
-    """
+    """API 응답을 DB 스키마(snake_case)에 맞게 매핑하고, 숫자 필드를 정규화합니다."""
     return {
-        # filter.py가 사용하는 필드 (원본 유지)
+        # filter.zero용 원본 필드(필요 시 어댑터에서 camelCase로 변환)
         'code': api_data.get('code'),
         'name': api_data.get('name'),
         'marketName': api_data.get('marketName'),
         'marketCode': api_data.get('marketCode'),
-        'listCount': api_data.get('listCount'),
         'auditInfo': api_data.get('auditInfo'),
         'state': api_data.get('state'),
-        
-        # Stock 모델 컬럼명 (추가 매핑)
+
+        # DB 스키마(일관된 snake_case) 필드
         'stock_name': api_data.get('name'),
         'market_name': api_data.get('marketName'),
-        'list_count': api_data.get('listCount'),
+        'list_count': _normalize_count(api_data.get('listCount') or api_data.get('list_count')),
         'audit_info': api_data.get('auditInfo'),
         'reg_day': api_data.get('regDay'),
-        'last_price': api_data.get('lastPrice'),
+        'last_price': _normalize_price(api_data.get('lastPrice') or api_data.get('last_price')),
         'market_code': api_data.get('marketCode'),
         'industry_name': api_data.get('upName'),
         'company_size_name': api_data.get('upSizeName'),
@@ -148,7 +147,7 @@ def get_managed_stocks_from_db(db_session) -> List[str]:
         return []
 
 
-def sync_stock_master_to_db(db_session) -> dict:
+def sync_stock_master_to_db(db_session) -> List[str]:
     """
     API로부터 최신 종목 정보를 가져와 DB의 `Stock` 테이블과 차이를 동기화합니다.
 
@@ -163,7 +162,8 @@ def sync_stock_master_to_db(db_session) -> dict:
     api_all = sync_stock_master_data()
     # NOTE: 필터 제로 호출은 동기화 단계에서 제거합니다. 분석 대상 필터링은 DAG 실행 중 별도 Task에서 수행됩니다.
 
-    api_codes = {s.get('code') for s in api_all if s.get('code')}
+    api_map = {s['code']: s for s in api_all if s.get('code')}
+    api_codes = set(api_map.keys())
 
     db_stocks = db_session.query(Stock).all()
     db_map = {s.stock_code: s for s in db_stocks}
@@ -177,60 +177,69 @@ def sync_stock_master_to_db(db_session) -> dict:
     delisted_count = 0
     updated_count = 0
 
-    # 4a. 신규 종목 추가
-    if new_codes:
-        for code in new_codes:
-            src = next((s for s in api_all if s.get('code') == code), None)
-            if not src:
+    # 신규 종목 추가 (API의 정규화된 키를 사용하여 초기화)
+    for code in new_codes:
+        src = api_map.get(code)
+        if not src:
+            continue
+        model_data = {}
+        # DB 컬럼명에 일치하는 키만 필터링
+        for col in Stock.__table__.columns.keys():
+            # skip primary key handled separately
+            if col == 'stock_code':
                 continue
-            stock_obj = Stock(
-                stock_code=code,
-                stock_name=src.get('name') or src.get('stock_name') or None,
-                market_name=src.get('marketName') or src.get('market_name') or None,
-                is_active=True,
-                backfill_needed=True,
-            )
-            db_session.add(stock_obj)
-            new_count += 1
+            # use normalized API source when available
+            if col in src:
+                model_data[col] = src[col]
+        # ensure canonical minimal fields
+        stock_obj = Stock(stock_code=code, stock_name=src.get('name') or None, market_name=src.get('marketName') or None, is_active=True, backfill_needed=True)
+        # set other fields if present in model_data
+        for k, v in model_data.items():
+            if hasattr(stock_obj, k):
+                setattr(stock_obj, k, v)
+        db_session.add(stock_obj)
+        new_count += 1
 
-    # 4b. 상장폐지/비활성 종목 처리
-    if delisted_codes:
-        for code in delisted_codes:
-            s = db_map.get(code)
-            if s and s.is_active:
-                s.is_active = False
-                delisted_count += 1
+    # 상장폐지/비활성 종목 처리
+    for code in delisted_codes:
+        s = db_map.get(code)
+        if s and s.is_active:
+            s.is_active = False
+            delisted_count += 1
 
-    # 4c. 기존 종목 정보 업데이트 및 재활성화
-    if existing_codes:
-        for code in existing_codes:
-            src = next((s for s in api_all if s.get('code') == code), None)
-            db_obj = db_map.get(code)
-            if not src or not db_obj:
-                continue
-            changed = False
-            new_name = src.get('name') or src.get('stock_name')
-            new_market = src.get('marketName') or src.get('market_name')
-            if new_name and new_name != db_obj.stock_name:
-                db_obj.stock_name = new_name
-                changed = True
-            if new_market and new_market != db_obj.market_name:
-                db_obj.market_name = new_market
-                changed = True
-            # 재활성화: DB에서 비활성화되어 있었으나 다시 API에 나타난 경우
-            if not db_obj.is_active:
-                db_obj.is_active = True
-                db_obj.backfill_needed = True
-                changed = True
-            if changed:
-                updated_count += 1
+    # 기존 종목 정보 업데이트 및 재활성화
+    for code in existing_codes:
+        src = api_map.get(code)
+        db_obj = db_map.get(code)
+        if not src or not db_obj:
+            continue
+
+        # API의 최신 정보로 정규화된 값으로 덮어쓰기
+        # 우리는 master_data_manager에서 이미 정규화된 키(list_count, last_price)를 사용함
+        for key, value in src.items():
+            # 변환된 키가 DB 컬럼에 존재하는 경우만 할당
+            if key in Stock.__table__.columns.keys():
+                try:
+                    setattr(db_obj, key, value)
+                except Exception:
+                    # 안전하게 무시 (타입 불일치 등은 이후 마이그레이션에서 해결)
+                    pass
+
+        # 일부 보정 필드: stock_name, market_name
+        db_obj.stock_name = src.get('name') or db_obj.stock_name
+        db_obj.market_name = src.get('marketName') or db_obj.market_name
+
+        # 재활성화 처리
+        if not db_obj.is_active:
+            db_obj.is_active = True
+            db_obj.backfill_needed = True
+
+        updated_count += 1
 
     db_session.commit()
-    summary = {"new_count": new_count, "delisted_count": delisted_count, "updated_count": updated_count}
-    logger.info(f"동기화 완료: {summary}")
+    logger.info(f"동기화 완료: 신규={new_count}, 비활성화={delisted_count}, 업데이트={updated_count}")
 
-    # 후속 Task에 전달할, 현재 DB에 저장된 최종 활성 종목 리스트를 조회하여 반환
-    logger.info("DB에서 최종 활성 종목 리스트를 조회하여 반환합니다.")
+    # 활성 종목 리스트를 반환 (XCom으로 전달 가능)
     active_stocks = db_session.query(Stock.stock_code).filter(Stock.is_active == True).all()
     return [code for code, in active_stocks]
 
@@ -254,6 +263,12 @@ def update_analysis_target_flags(db_session, stock_codes: List[str]) -> int:
             'code': s.stock_code, 'name': s.stock_name, 'state': s.state,
             'auditInfo': s.audit_info, 'lastPrice': s.last_price, 'listCount': s.list_count
         } for s in target_stocks]
+
+        # [임시 디버그] apply_filter_zero에 입력되는 데이터 샘플을 확실히 출력하도록
+        # - INFO가 필터링되는 환경에서 로그가 보이지 않는 문제를 빠르게 확인하기 위해
+        #   logger.warning과 print를 함께 사용합니다. (후속 검증 후 반드시 되돌릴 것)
+        if stock_info_for_filter:
+            logger.info(f"apply_filter_zero에 전달될 데이터 샘플 (첫 번째 종목): {stock_info_for_filter[0]}")
 
         # 3. '필터 제로' 적용
         filtered_stocks_info = apply_filter_zero(stock_info_for_filter)

@@ -81,26 +81,66 @@
 - 사용 상황: UI 대신 터미널로 배치 DAG 실행 (예: 주식 분석 테스트).
 
 ## 6) Airflow: DAG run 목록 확인 (성공)
-- 명령:
+- 명령(실행 예시 — 최신 50개 DAG run만 출력):
+  ```
+  docker compose --env-file .env.docker --profile pipeline exec airflow-scheduler bash -lc "airflow dags list-runs -d dag_initial_loader | tail -n 50"
+  ```
+
   ```
   docker compose --env-file .env.docker --profile pipeline exec airflow-scheduler bash -lc "airflow dags list-runs -d dag_daily_batch | tail -n 50"
   ```
-- 설명: DAG 실행 목록과 상태(queued/running/success/failed)를 확인. 최근 50줄로 최신 run 우선.
-- 사용 상황: 트리거 후 상태 모니터링 (예: manual__2025-10-13T... run 확인).
+- 설명: 
+  - 각각의 명령은 해당 DAG(dag_initial_loader, dag_daily_batch)의 실행 이력을 최신순으로 50개만 출력합니다.
+  - 상태(queued/running/success/failed) 및 실행일자(run_date) 등 핵심 정보를 확인할 수 있습니다.
+  - 여러 DAG의 실행 상태를 빠르게 비교할 때 위와 같이 각각 따로 명령을 실행하세요.
 
-## 7) Airflow 로그 파일 직접 확인 (성공)
-- 명령(성공):
+- 사용 상황: 
+  - DAG를 수동 트리거한 후, 실행(run) 결과와 상태를 실시간으로 모니터링할 때 사용합니다.
+  - 특정 run_id(예: manual__2025-10-13T12:00:00+00:00)가 성공적으로 실행되었는지, 실패했는지를 신속하게 파악하고자 할 때 활용합니다.
+
+
+## 7) Airflow 로그 파일 직접 확인 및 분석 방법
+
+- 목적: 
+  - Airflow 웹 UI에서 로그가 제대로 표시되지 않거나 접근이 어려울 때, 컨테이너 내부에 저장된 로그 파일을 직접 읽어서 원하는 Task의 실행 내역을 상세하게 파악할 수 있습니다.
+
+- 활용 예시(명령어, *명령어 자체 수정 금지*):
   ```
   docker compose --env-file .env.docker --profile pipeline exec airflow-scheduler bash -lc "ls -lt '/opt/airflow/logs/dag_id=dag_daily_batch/run_id=manual__2025-10-13T12:00:00+00:00/task_id=calculate_core_metrics.calculate_rs_score/'"
   docker compose --env-file .env.docker --profile pipeline exec airflow-scheduler bash -lc "tail -n 200 '/opt/airflow/logs/dag_id=dag_daily_batch/run_id=manual__2025-10-13T12:00:00+00:00/task_id=calculate_core_metrics.calculate_rs_score/attempt=1.log'"
   ```
-- 설명: Airflow UI에서 로그가 보이지 않을 때 직접 컨테이너 파일 경로에서 로그 파일을 열어 분석. (디렉토리 → 최신 `attempt` 파일 → tail). TaskGroup 태스크(예: calculate_core_metrics.calculate_rs_score) 경로 주의.
-- 사용 상황: RS/재무 계산 오류 디버깅 (예: filter_analysis_targets 로그 확인).
+  - 첫 번째 명령어는 원하는 DAG 실행(run_id) 및 Task의 로그 디렉토리 리스트를 시간순(-lt)으로 나열합니다.
+  - 두 번째 명령어는 해당 Task의 실행 로그 파일(여기서는 1번째 attempt)을 마지막 200줄만 잘라서 빠르게 확인합니다.
 
-추가 예: `sync_stock_master` Task의 최신 run 로그를 바로 출력하려면 다음 명령을 사용하세요.
+- 설명:
+  - Airflow의 각 Task는 컨테이너 내부 경로 `/opt/airflow/logs/` 하위에 DAG별, run_id별, task_id별 구조로 로그 파일이 저장됩니다.
+  - TaskGroup 또는 이름이 긴 task_id인 경우, 경로를 복사하여 붙여넣는 것이 실수 방지에 좋습니다. (`calculate_core_metrics.calculate_rs_score` 등)
+  - 여러 attempt(재시도)가 있을 수 있으므로 가장 마지막(최신) attempt 로그를 `ls -lt`로 먼저 확인한 후 `tail`로 내용을 보면 됩니다.
+  - 직접 로그를 확인하면 Airflow UI의 미노출 로그, Task 실패의 상세 원인, 코드에서 남기는 print/log 메시지까지 모두 볼 수 있습니다.
+
+- 사용 상황:
+  - RS 점수 계산, 재무 데이터 처리 등에서 오류가 나지만 Airflow UI 로그가 비거나 일부만 보일 때
+  - 분석 Task 내에서 print, logger 등으로 남긴 커스텀 로그 메시지를 직접 열람하고자 할 때
+  - Task들이 그룹(TaskGroup) 안에 있을 때 정확한 경로를 확인하고 싶을 때
+
+- 추가 로그 접근 예시:
+  - 특정 run_id와 Task를 직접 지정하여 로그를 확인하고 싶을 때, 아래 방식처럼 해당 경로에 대해 tail 커맨드를 실행합니다.
 ```
-docker compose --env-file /home/jscho/ChartInsight-Studio/.env.docker --profile pipeline exec airflow-scheduler bash -lc "tail -n 500 '/opt/airflow/logs/dag_id=dag_daily_batch/run_id=manual__2025-10-16T13:15:40+00:00/task_id=sync_stock_master/attempt=1.log'"
+docker compose --env-file /home/jscho/ChartInsight-Studio/.env.docker --profile pipeline exec airflow-scheduler bash -lc "tail -n 500 '/opt/airflow/logs/dag_id=dag_initial_loader/run_id=manual__2025-10-20T17:20:09+09:00/task_id=stock_info_load_task/attempt=1.log'"
 ```
+
+```
+docker compose --env-file /home/jscho/ChartInsight-Studio/.env.docker --profile pipeline exec airflow-scheduler bash -lc "tail -n 500 '/opt/airflow/logs/dag_id=dag_initial_loader/run_id=manual__2025-10-20T17:20:09+09:00/task_id=initial_load_task/attempt=1.log'"
+```
+  - 로그 파일 경로에서 `dag_id`, `run_id`, `task_id`, 그리고 `attempt=N.log` 순으로 구성되어 있으니, 원하는 DAG 실행의 정확한 정보를 가지고 명령어를 작성해야 결과를 바로 볼 수 있습니다.
+
+- 참고:
+  - 여러 attempt(재시도)가 기록될 수 있으니, 여러 개의 attempt log가 있으면 가장 최근 파일(숫자가 가장 큰 파일)을 확인하세요.
+  - 출력 줄 수(`-n 200`, `-n 500`)는 필요하면 조절하면 됩니다.
+  - 로그 분석 결과로 DB 쿼리, 데이터 처리 예외 등 상세 오류 맥락을 빠르게 파악할 수 있습니다.
+
+
+
 사용 예: `dag_daily_batch`를 수동으로 트리거한 후(예: run_id `manual__2025-10-16T13:15:40+00:00`) `sync_stock_master`의 상세 로그를 확인하고자 할 때.
 
 ## 8) Airflow 스케줄러 로그 확인
