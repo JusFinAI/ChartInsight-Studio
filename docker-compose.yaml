@@ -4,6 +4,7 @@
 x-airflow-common:
   &airflow-common
   image: apache/airflow:2.10.5
+  env_file: .env.docker
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow:5432/airflow_meta

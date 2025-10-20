@@ -48,7 +48,10 @@ if src_path not in sys.path:
 
 # 프로젝트 모듈 import
 try:
-    from kiwoom_api.services.chart import get_daily_chart, get_minute_chart, get_weekly_chart
+    from kiwoom_api.services.chart import (
+        get_daily_stock_chart, get_minute_chart, get_weekly_stock_chart, get_monthly_stock_chart,
+        get_daily_inds_chart, get_weekly_inds_chart, get_monthly_inds_chart
+    )
 except ImportError as e:
     print(f"❌ 키움 API 모듈을 불러올 수 없습니다: {e}")
     print("💡 현재 작업 디렉토리에 src/kiwoom_api 디렉토리가 있는지 확인해주세요.")
@@ -90,6 +93,8 @@ class StockDataPreparer:
                 return 252  # 1년 거래일
             elif timeframe == 'weekly':
                 return 52   # 1년 주수
+            elif timeframe == 'monthly':
+                return 12   # 1년 12개월
             else:
                 return 100  # 기본값
         
@@ -116,6 +121,8 @@ class StockDataPreparer:
                 total_units += months * 21  # 21 거래일
             elif timeframe == 'weekly':
                 total_units += months * 4   # 4주
+            elif timeframe == 'monthly':
+                total_units += months      # months for monthly
         
         # 주(w) 매칭
         week_match = re.search(r'(\d+)w', period_str)
@@ -241,6 +248,8 @@ class StockDataPreparer:
             return 'd'
         elif timeframe == 'weekly':
             return 'w'
+        elif timeframe == 'monthly':
+            return 'mon'
         else:
             return timeframe
 
@@ -272,15 +281,22 @@ class StockDataPreparer:
                     num_candles=num_candles
                 )
             elif timeframe == 'daily':
-                return get_daily_chart(
+                return get_daily_stock_chart(
                     stock_code=stock_code,
                     base_date=None,  # base_date 제거: 현재 날짜 기준
                     num_candles=num_candles
                 )
             elif timeframe == 'weekly':
-                return get_weekly_chart(
+                return get_weekly_stock_chart(
                     stock_code=stock_code,
                     base_date=None,  # base_date 제거: 현재 날짜 기준
+                    num_candles=num_candles
+                )
+
+            elif timeframe == 'monthly':
+                return get_monthly_stock_chart(
+                    stock_code=stock_code,
+                    base_date=None,
                     num_candles=num_candles
                 )
             else:
@@ -480,7 +496,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--timeframe',
         required=True,
-        choices=['minute', 'daily', 'weekly'],
+        choices=['minute', 'daily', 'weekly', 'monthly'],
         help='데이터 타임프레임'
     )
     

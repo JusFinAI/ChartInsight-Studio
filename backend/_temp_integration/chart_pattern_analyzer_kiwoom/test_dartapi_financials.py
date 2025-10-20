@@ -78,7 +78,7 @@ class FinancialDataParser:
                     "year": int(item["bsns_year"]),
                     "quarter": "Q4", # 사업보고서는 Q4 기준으로 저장
                     "account_id": "SharesOutstanding",
-                    "amount": self._to_numeric(item.get("istc_totqy"))
+                    "amount": self._to_numeric(item.get("distb_stock_co"))
                 })
         df = pd.DataFrame(processed_list)
         return df.dropna(subset=['account_id']).drop_duplicates(

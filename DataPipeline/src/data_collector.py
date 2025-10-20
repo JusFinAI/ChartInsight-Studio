@@ -31,16 +31,20 @@ sys.path.insert(0, project_root)
 
 # 로컬 모듈 임포트
 from src.database import SessionLocal, Candle, Stock
-from src.kiwoom_api.services.chart import get_minute_chart, get_daily_chart, get_weekly_chart
+from src.kiwoom_api.services.chart import (
+    get_minute_chart,
+    get_daily_stock_chart,
+    get_weekly_stock_chart,
+    get_monthly_stock_chart,
+    get_monthly_inds_chart,
+)
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-# 로깅 설정
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from src.utils.logging_kst import configure_kst_logger
+
+# 모듈 전용 KST 로거 사용
+logger = configure_kst_logger(__name__)
 
 # 상수 정의
 TIMEFRAME_TO_MINUTES = {
@@ -65,13 +69,18 @@ TIMEFRAME_TO_LABEL = {
     'w': '주'
 }
 
+# [추가] 월봉 매핑
+TIMEFRAME_TO_DB_FORMAT['mon'] = 'MON'
+TIMEFRAME_TO_LABEL['mon'] = '월'
+
 # 타임프레임별 최적화된 기본 기간 매핑
 TIMEFRAME_DEFAULT_PERIODS = {
     '5m': '30d',    # 5분봉: 30일 (약 8,640개 캔들)
     '30m': '6m',    # 30분봉: 6개월 (약 8,760개 캔들)
     '1h': '1y',     # 1시간봉: 1년 (약 8,760개 캔들)
     'd': '5y',      # 일봉: 5년 (약 1,825개 캔들)
-    'w': '10y'      # 주봉: 10년 (약 520개 캔들)
+    'w': '10y',     # 주봉: 10년 (약 520개 캔들)
+    'mon': '10y'    # 월봉: 10년 (약 120개 캔들, RS 계산에 필수)
 }
 
 def _db_upsert_candles(db: Session, stock_code: str, timeframe: str, df_candles: pd.DataFrame, execution_mode: str = 'LIVE') -> int:
@@ -268,7 +277,7 @@ def _parse_period(period: str, timeframe: str) -> int:
         if 'y' in period:
             match = re.search(r'(\d+)y', period)
             if not match:
-                raise ValueError(f"잘못된 연도 형식: {period}")
+                raise ValueError(f"잘못된 년도 형식: {period}")
             years = int(match.group(1))
             total_days = years * 252  # 1년 = 약 252 거래일
             
@@ -307,7 +316,12 @@ def _parse_period(period: str, timeframe: str) -> int:
         # 1주는 5거래일이므로, 총 거래일을 5로 나눈 값이 주봉 캔들 수
         return max(1, total_days // 5)
 
-    # 3. 타임프레임별 하루당 캔들 수 정의 (한국 주식시장 기준)
+    # 3. 월봉(mon)은 특별 처리: 거래일 수를 월 수로 변환
+    if timeframe == 'mon':
+        # 1개월은 약 21거래일이므로, 총 거래일을 21로 나눈 값이 월봉 캔들 수
+        return max(1, total_days // 21)
+
+    # 4. 타임프레임별 하루당 캔들 수 정의 (한국 주식시장 기준)
     candles_per_day = {
         '5m': 78,   # (6시간 30분 * 60분) / 5분 = 78개
         '30m': 13,  # (6.5시간 * 60) / 30분 = 13개
@@ -318,10 +332,10 @@ def _parse_period(period: str, timeframe: str) -> int:
     if timeframe not in candles_per_day:
         raise ValueError(f"지원하지 않는 타임프레임: {timeframe}")
 
-    # 4. 최종 캔들 수 계산: (총 거래일 수) * (하루당 캔들 수)
+    # 5. 최종 캔들 수 계산: (총 거래일 수) * (하루당 캔들 수)
     total_candles = total_days * candles_per_day[timeframe]
     
-    # 5. 최소값 보장 및 결과 반환
+    # 6. 최소값 보장 및 결과 반환
     result = max(1, int(total_candles))
     
     # 디버깅을 위한 로그 (선택사항)
@@ -480,21 +494,15 @@ def load_initial_history(stock_code: str, timeframe: str, base_date: str = None,
                     auto_pagination=True
                 )
             elif timeframe == 'd':
-                # 일봉 데이터
-                chart_data_obj = get_daily_chart(
-                    stock_code=stock_code,
-                    base_date=base_date,
-                    num_candles=num_candles,
-                    auto_pagination=True
-                )
+                chart_data_obj = get_daily_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
             elif timeframe == 'w':
-                # 주봉 데이터
-                chart_data_obj = get_weekly_chart(
-                    stock_code=stock_code,
-                    base_date=base_date,
-                    num_candles=num_candles,
-                    auto_pagination=True
-                )
+                chart_data_obj = get_weekly_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
+            elif timeframe == 'mon':
+                if len(stock_code) == 3:
+                    # 업종/지수 조회: get_monthly_inds_chart는 modified_price_type를 사용하지 않으므로 전달하지 않습니다.
+                    chart_data_obj = get_monthly_inds_chart(inds_code=stock_code, base_date=base_date, num_candles=num_candles, auto_pagination=True)
+                else:
+                    chart_data_obj = get_monthly_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
             else:
                 logger.error(f"지원하지 않는 타임프레임: {timeframe}")
                 return False
@@ -630,19 +638,27 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
                     auto_pagination=False
                 )
             elif timeframe == 'd':
-                # 일봉 데이터
-                chart_data_obj = get_daily_chart(
+                # 일봉 데이터 (명시적 종목 호출)
+                chart_data_obj = get_daily_stock_chart(
                     stock_code=stock_code,
                     base_date=None,
                     num_candles=30,  # 최근 30일
                     auto_pagination=False
                 )
             elif timeframe == 'w':
-                # 주봉 데이터
-                chart_data_obj = get_weekly_chart(
+                # 주봉 데이터 (명시적 종목 호출)
+                chart_data_obj = get_weekly_stock_chart(
                     stock_code=stock_code,
                     base_date=None,
                     num_candles=10,  # 최근 10주
+                    auto_pagination=False
+                )
+            elif timeframe == 'mon':
+                # 월봉 데이터 (명시적 종목 호출)
+                chart_data_obj = get_monthly_stock_chart(
+                    stock_code=stock_code,
+                    base_date=None,
+                    num_candles=5,  # 최근 5개월
                     auto_pagination=False
                 )
             else:
@@ -717,6 +733,84 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
     finally:
         if db:
             db.close()
+
+
+def get_candles(stock_code: str, timeframe: str, execution_mode: str = 'LIVE') -> pd.DataFrame:
+    """DB에서 종목의 캔들 데이터를 조회하여 DataFrame으로 반환합니다.
+    
+    이 함수는 RS 계산 등 분석 모듈에서 사용되며, 지정된 종목과 타임프레임의
+    전체 캔들 데이터를 시간 순서로 정렬하여 반환합니다.
+    
+    Args:
+        stock_code (str): 종목 코드 (예: '005930', '001' for KOSPI)
+        timeframe (str): 타임프레임 ('d', 'w', 'mon')
+        execution_mode (str): 실행 모드 ('LIVE' or 'SIMULATION')
+        
+    Returns:
+        pd.DataFrame: 캔들 데이터
+            - Index: datetime (timestamp)
+            - Columns: open, high, low, close, volume
+            - 시간 순서로 정렬됨 (오래된 것 → 최신)
+    
+    Example:
+        >>> df = get_candles('005930', 'mon', 'LIVE')
+        >>> print(df.head())
+                            open     high      low    close    volume
+        timestamp                                                    
+        2015-11-01  1234.5  1245.0  1230.0  1240.0  1000000
+        ...
+    """
+    # 실행 모드에 따라 스키마 설정
+    target_schema = 'simulation' if execution_mode == 'SIMULATION' else 'live'
+    Candle.__table__.schema = target_schema
+    
+    db: Session = SessionLocal()
+    try:
+        # 타임프레임을 DB 형식으로 변환
+        timeframe_str = TIMEFRAME_TO_DB_FORMAT.get(timeframe, timeframe.upper())
+        
+        logger.info(f"[{stock_code}] {timeframe_str} 캔들 데이터 조회 시작 (스키마: {target_schema})")
+        
+        # DB에서 캔들 데이터 조회 (timestamp 오름차순)
+        candles = db.query(Candle).filter(
+            Candle.stock_code == stock_code,
+            Candle.timeframe == timeframe_str
+        ).order_by(Candle.timestamp).all()
+        
+        if not candles:
+            logger.warning(f"[{stock_code}] {timeframe_str} 캔들 데이터가 DB에 없습니다.")
+            return pd.DataFrame()
+        
+        # DataFrame으로 변환
+        data = []
+        for candle in candles:
+            data.append({
+                'timestamp': candle.timestamp,
+                'open': float(candle.open),
+                'high': float(candle.high),
+                'low': float(candle.low),
+                'close': float(candle.close),
+                'volume': int(candle.volume)
+            })
+        
+        df = pd.DataFrame(data)
+        df = df.set_index('timestamp').sort_index()
+        
+        logger.info(f"[{stock_code}] {timeframe_str} 캔들 {len(df)}개 조회 완료 "
+                   f"(기간: {df.index[0]} ~ {df.index[-1]})")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"[{stock_code}] {timeframe} 데이터 조회 중 오류: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return pd.DataFrame()
+    finally:
+        # 스키마를 기본값으로 복원
+        Candle.__table__.schema = 'live'
+        db.close()
+
 
 def main():
     """CLI 메인 함수"""

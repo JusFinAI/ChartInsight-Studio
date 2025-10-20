@@ -1,11 +1,20 @@
 # DAG 파일: Live 증분 업데이트 (동적 생성)
+"""
+⚠️ 사전 요구사항:
+이 DAG가 정상적으로 실행되려면 Airflow UI에서 Pool을 수동으로 생성해야 합니다.
+- Pool Name: kiwoom_api_pool
+- Pool Slots: 1  (API 동시 호출 제한)
+(CLI 명령어: airflow pools set kiwoom_api_pool 1 "Kiwoom API Rate Limiting")
+"""
 import pendulum
 from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
+from functools import lru_cache
+from typing import List
 
 # --- 공통 모듈 및 변수 로드 ---
 from src.data_collector import collect_and_store_candles
-from src.utils.common_helpers import get_target_stocks
+from src.database import SessionLocal, Stock
 
 # --- ⚙️ 설정: 모든 증분 DAG의 설정을 한 곳에서 관리 ---
 DAG_CONFIGS = {
@@ -16,13 +25,36 @@ DAG_CONFIGS = {
     'weekly': {'schedule': '0 17 * * 5', 'tags': ['weekly']}, # 금요일 17시
 }
 
-TARGET_STOCKS = get_target_stocks() 
-
 DEFAULT_ARGS = {
     'owner': 'tradesmart_ai',
     'retries': 2,
     'retry_delay': pendulum.duration(minutes=3),
 }
+
+# ---------------------------------------------
+# 캐시된 종목 리스트 조회 함수
+# ---------------------------------------------
+
+@lru_cache(maxsize=1)
+def get_live_collector_targets() -> List[str]:
+    """
+    캐시된 종목 리스트 반환 (DAG 파싱 시 1회만 DB 조회)
+    
+    live.stocks 테이블에서 is_active=True인 종목 코드를 조회합니다.
+    @lru_cache 데코레이터를 통해 DAG 파일 파싱 시 단 한 번만 DB에 접근하며,
+    이후 호출은 캐시된 결과를 반환하여 DB 부하를 최소화합니다.
+    
+    Returns:
+        List[str]: 활성 상태인 종목 코드 리스트
+    """
+    db = SessionLocal()
+    try:
+        rows = db.query(Stock.stock_code).filter(Stock.is_active == True).all()
+        codes = [r.stock_code for r in rows]
+        return codes
+    finally:
+        db.close()
+
 # ---------------------------------------------
 
 # Airflow Task에서 호출될 공통 함수
@@ -38,10 +70,6 @@ def _run_live_task(stock_code: str, timeframe: str):
 
 # --- 🏭 동적 DAG 생성 공장 ---
 for timeframe, config in DAG_CONFIGS.items():
-    
-    # timeframe 변수에서 'm', 'h' 등을 제거하여 DB 포맷('d', 'w')과 일치시킴
-    db_timeframe = timeframe.replace('m','').replace('h','') if 'm' in timeframe or 'h' in timeframe else timeframe
-
     dag_id = f'dag_{timeframe}_collector'
 
     with DAG(
@@ -51,17 +79,21 @@ for timeframe, config in DAG_CONFIGS.items():
         start_date=pendulum.datetime(2025, 7, 1, tz="Asia/Seoul"),
         catchup=False,
         tags=['production', 'incremental'] + config['tags'],
-        max_active_runs=1 # 동시에 여러 스케줄이 실행되지 않도록 방지
+        max_active_runs=1,  # 동시에 여러 스케줄이 실행되지 않도록 방지
+        description='[LIVE 모드 전용] 실시간 증분 데이터 수집 DAG'
     ) as dag:
         
-        for stock_code in TARGET_STOCKS:
+        # 캐시된 함수 호출로 활성 종목 리스트 조회
+        target_stocks = get_live_collector_targets()
+        
+        for stock_code in target_stocks:
             PythonOperator(
-                task_id=f'collect_{stock_code}_{db_timeframe}',
+                task_id=f'collect_{stock_code}_{timeframe}',  # 원본 timeframe 사용 (가독성 우선)
                 python_callable=_run_live_task,
                 op_kwargs={
                     'stock_code': stock_code,
                     # 정규화: DAG 레벨에서 'daily'/'weekly'을 collector가 기대하는 'd'/'w'로 변환
                     'timeframe': ('d' if timeframe == 'daily' else ('w' if timeframe == 'weekly' else timeframe))
                 },
-                pool='kiwoom_api_pool' # API 호출 제한을 위한 Pool 사용 (매우 중요!)
+                pool='kiwoom_api_pool'  # API 호출 제한을 위한 Pool 사용 (매우 중요!)
             )

@@ -1,8 +1,5 @@
 # Environment & secrets
 
-.env.local
-.env.*.local
-
 # Logs
 *.log
 logs/
