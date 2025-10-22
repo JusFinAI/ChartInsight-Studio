@@ -11,12 +11,14 @@ import logging
 
 # import master_data_manager
 from src.master_data_manager import sync_stock_master_to_db, update_analysis_target_flags
-from src.data_collector import collect_and_store_candles
+from src.data_collector import collect_and_store_candles, load_initial_history
 from src.analysis.rs_calculator import calculate_rs_for_stocks
 from src.analysis.financial_analyzer import analyze_financials_for_stocks
 from src.analysis.technical_analyzer import analyze_technical_for_stocks
 from sqlalchemy.dialects.postgresql import insert
-from src.database import SessionLocal, DailyAnalysisResult, FinancialAnalysisResult, Stock
+from src.database import SessionLocal, DailyAnalysisResult, FinancialAnalysisResult, Stock, Sector
+import logging
+import time
 
 # --- 1. 기본 설정 ---
 DEFAULT_ARGS = {
@@ -57,57 +59,54 @@ def _sync_stock_master(**kwargs):
 
 
 def _fetch_latest_low_frequency_candles(**kwargs):
-    """Task 2: 저빈도(일/주/월) 캔들 최신 데이터 수집
-    
-    키움 API로부터 일/주/월봉의 최신 데이터를 증분 수집합니다.
-    API가 제공하는 완성된 캔들 데이터를 신뢰하여 저장합니다.
-    """
+    """[수정] 모든 대상(종목,지수,업종)의 저빈도 캔들 '증분' 데이터 수집"""
     execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
     logger = logging.getLogger(__name__)
     if execution_mode == 'SIMULATION':
         logger.info("SIMULATION 모드: 저빈도 캔들 수집을 건너뜁니다.")
         return
 
-    # [수정] XCom 조회 대신 DB에서 직접 분석 대상 조회
     db = SessionLocal()
     try:
-        target_codes_tuples = db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()
-        stock_codes = [code for code, in target_codes_tuples]
+        # 1. 분석 대상 '종목' 코드 조회
+        stock_codes = {s.stock_code for s in db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()}
+        # 2. 전체 '업종' 코드 조회
+        sector_codes = {s.sector_code for s in db.query(Sector.sector_code).all()}
+        # 3. '시장 지수' 코드 추가
+        market_index_codes = {'001', '101'}
+        # 4. 모든 코드 통합
+        all_codes_to_update = list(stock_codes | sector_codes | market_index_codes)
     finally:
         db.close()
 
-    if not stock_codes:
-        logger.warning("DB에서 분석 대상 종목 리스트를 찾지 못했습니다. Task를 건너뜁니다.")
+    if not all_codes_to_update:
+        logger.warning("캔들 증분 업데이트 대상이 없습니다.")
         return
 
-    logger.info(f"총 {len(stock_codes)}개 종목에 대한 저빈도(일/주/월) 최신 캔들 데이터 수집을 시작합니다.")
-
-    # 업데이트할 타임프레임 목록에 'mon' 추가
+    logger.info(f"총 {len(all_codes_to_update)}개 대상에 대한 증분 캔들 수집을 시작합니다.")
     timeframes_to_update = ['d', 'w', 'mon']
 
     success_count = 0
     fail_count = 0
 
-    # get_managed_stocks_from_db는 항상 문자열 리스트를 반환합니다
-    for i, stock_code in enumerate(stock_codes):
+    for i, code in enumerate(all_codes_to_update):
         for timeframe in timeframes_to_update:
             try:
-                logger.info(f"[{i+1}/{len(stock_codes)}] {stock_code} ({timeframe}) 업데이트 중...")
+                logger.info(f"[{i+1}/{len(all_codes_to_update)}] {code} ({timeframe}) 증분 업데이트 중...")
                 collect_and_store_candles(
-                    stock_code=stock_code,
+                    stock_code=code,
                     timeframe=timeframe,
-                    execution_mode='LIVE'
+                    execution_mode=execution_mode
                 )
                 success_count += 1
             except Exception as e:
-                logger.error(f"'{stock_code}' ({timeframe}) 업데이트 중 오류 발생: {e}")
+                logger.error(f"'{code}' ({timeframe}) 업데이트 중 오류 발생: {e}")
                 fail_count += 1
 
-    logger.info(f"저빈도 캔들 데이터 수집 완료. 성공: {success_count}, 실패: {fail_count}")
+    logger.info(f"저빈도 캔들 증분 수집 완료. 성공: {success_count}, 실패: {fail_count}")
 
-    if fail_count > len(stock_codes) * len(timeframes_to_update) * 0.5:
+    if fail_count > len(all_codes_to_update) * len(timeframes_to_update) * 0.5:
         raise ValueError("너무 많은 캔들 데이터 수집 작업에 실패했습니다.")
-
 
 
 
@@ -488,6 +487,8 @@ with DAG(
         """,
     )
 
+    # NOTE: 기준 데이터 새로고침 Task는 초기 로더(dag_initial_loader)에 의해 처리되므로 삭제됨.
+
     with TaskGroup(group_id='calculate_core_metrics') as calculate_core_metrics_group:
         calculate_rs_task = PythonOperator(
             task_id='calculate_rs_score',
@@ -519,7 +520,10 @@ with DAG(
         """,
     )
     sync_stock_master_task >> update_analysis_target_flags_task
+
+    # refresh_baseline_candles_task와 fetch_latest_low_frequency_candles_task는 서로 의존성이 없으므로 병렬 실행 가능
     update_analysis_target_flags_task >> fetch_latest_low_frequency_candles_task
+
     fetch_latest_low_frequency_candles_task >> [calculate_core_metrics_group, run_technical_analysis_task]
     # ensure load_final_results_task is defined before referencing it
     load_final_results_task = PythonOperator(

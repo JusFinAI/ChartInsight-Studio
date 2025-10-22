@@ -32,6 +32,7 @@ from src.data_collector import load_initial_history
 from src.database import SessionLocal, Stock
 from src.master_data_manager import sync_stock_master_to_db
 from src.utils.common_helpers import get_target_stocks, get_all_filtered_stocks
+import logging
 
 DEFAULT_ARGS = {
     'owner': 'tradesmart_ai',
@@ -133,43 +134,46 @@ def _run_initial_load_task(db_session=None, **kwargs):
         total_tasks = len(target_stocks) * len(timeframes_to_process)
         current_task = 0
 
-        # --- 시장 지수(인덱스) 고정 적재 (항상 수행, stock_limit 영향 없음) ---
+        # --- [신규] 1. 업종 마스터 데이터 준비 ---
+        from src.kiwoom_api.services.master import get_sector_list
         from sqlalchemy.dialects.postgresql import insert
-        index_info = [
-            {'stock_code': '001', 'stock_name': 'KOSPI', 'market_name': 'INDEX', 'is_active': True, 'backfill_needed': False},
-            {'stock_code': '101', 'stock_name': 'KOSDAQ', 'market_name': 'INDEX', 'is_active': True, 'backfill_needed': False}
-        ]
-        print("🔔 시장 지수 정보를 'stocks' 테이블에 UPSERT 합니다.")
-        stmt = insert(Stock).values(index_info)
-        update_cols = {c.name: getattr(stmt.excluded, c.name) for c in Stock.__table__.columns if c.name != 'stock_code'}
-        final_stmt = stmt.on_conflict_do_update(index_elements=['stock_code'], set_=update_cols)
-        db_session.execute(final_stmt)
+        from src.database import Sector, Stock
+
+        logger = logging.getLogger(__name__)
+        logger.info("업종 마스터 데이터 준비를 시작합니다.")
+        all_sectors = get_sector_list()
+        if all_sectors:
+            stmt = insert(Sector).values(all_sectors)
+            update_stmt = stmt.on_conflict_do_update(
+                index_elements=['sector_code'],
+                set_={'sector_name': stmt.excluded.sector_name, 'market_name': stmt.excluded.market_name}
+            )
+            db_session.execute(update_stmt)
+            db_session.commit()
+            logger.info(f"{len(all_sectors)}개 업종 마스터 데이터 준비 완료.")
+        else:
+            logger.warning("API로부터 업종 데이터를 가져오지 못했습니다.")
+
+        # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 월봉 전체 적재 ---
+        logger.info("기준 데이터(지수, 업종)의 전체 과거 월봉 적재를 시작합니다.")
+        index_codes = ['001', '101']
+        sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
+        baseline_codes = index_codes + sector_codes
+
+        # 기준 데이터 레코드가 stocks 테이블에 존재하도록 보장
+        baseline_stock_info = [{'stock_code': code, 'stock_name': 'BASELINE_DATA', 'is_active': True, 'backfill_needed': False} for code in baseline_codes]
+        stmt = insert(Stock).values(baseline_stock_info)
+        db_session.execute(stmt.on_conflict_do_nothing(index_elements=['stock_code']))
         db_session.commit()
 
-        index_codes = ['001', '101']  # KOSPI, KOSDAQ
-        index_timeframes = ['mon']
-        print(f"🔔 시장 지수 데이터 고정 적재를 시작합니다: {index_codes} x {index_timeframes}")
-        for idx_code in index_codes:
-            for timeframe in index_timeframes:
-                current_task += 1
-                total_tasks += 1
-                period_for_timeframe = TIMEFRAME_PERIOD_MAP.get(timeframe, '1y')
-                print(f"\n[INDEX {current_task}] 처리 중: {idx_code} - {timeframe} (기간: {period_for_timeframe})")
-                try:
-                    success = load_initial_history(
-                        stock_code=idx_code, timeframe=timeframe, base_date=base_date, period=period_for_timeframe, execution_mode=execution_mode
-                    )
-                    if success:
-                        success_count += 1
-                        print(f"✅ 성공: {idx_code} - {timeframe}")
-                    else:
-                        fail_count += 1
-                        print(f"⚠️ 데이터 없음: {idx_code} - {timeframe}")
-                except Exception as e:
-                    fail_count += 1
-                    print(f"❌ 실패: {idx_code} - {timeframe}: {str(e)}")
+        for code in baseline_codes:
+            try:
+                load_initial_history(stock_code=code, timeframe='mon', period='10y', execution_mode=execution_mode)
                 time.sleep(0.3)
-        print(f"🔔 시장 지수 데이터 고정 적재 완료. 성공: {success_count}, 실패: {fail_count}")
+            except Exception as e:
+                logger.error(f"기준 데이터 적재 중 오류: {code} - {e}", exc_info=True)
+                continue
+        logger.info("기준 데이터 과거 월봉 적재 완료.")
 
         for stock_code in target_stocks:
             all_success = True
@@ -199,6 +203,15 @@ def _run_initial_load_task(db_session=None, **kwargs):
                 db_session.query(Stock).filter(Stock.stock_code == stock_code).update({"backfill_needed": False})
                 db_session.commit()
                 print(f"'{stock_code}' 백필 완료. backfill_needed=False로 업데이트.")
+
+        # --- [신규 최종 단계] 4. 적재된 종목에 대한 업종 코드 백필 ---
+        try:
+            from src.master_data_manager import backfill_sector_codes
+            logger.info("초기 적재된 종목에 대한 업종 코드 매핑(백필)을 시작합니다.")
+            backfill_sector_codes()
+            logger.info("업종 코드 매핑(백필) 완료.")
+        except Exception as e:
+            logger.error(f"초기 적재 후 업종 코드 백필 중 오류 발생: {e}", exc_info=True)
 
         # 4. 최종 결과 출력 (이하 생략)
 

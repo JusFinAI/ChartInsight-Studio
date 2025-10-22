@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     UniqueConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     inspect,
     func,
@@ -63,10 +64,20 @@ except Exception:
 
 class Stock(Base):
     __tablename__ = "stocks"
-    __table_args__ = {'schema': 'live'}  # 명시적 스키마 지정
+    # __table_args__에 ForeignKeyConstraint 추가
+    __table_args__ = (
+        ForeignKeyConstraint(['sector_code'], ['live.sectors.sector_code'], name='fk_stock_sector_code'),
+        {'schema': 'live'}
+    )
 
     stock_code = Column(String(20), primary_key=True, index=True)  # 종목코드 (기본키)
     stock_name = Column(String(100), index=True)  # 종목명
+
+    # --- [신규] Sector 와의 관계 설정 ---
+    sector_code = Column(String(10), nullable=True, comment="업종코드")
+    sector = relationship("Sector", back_populates="stocks")
+    # --- [신규] ---
+
     list_count = Column(BigInteger, nullable=True)  # 상장주식수 (정수형)
     audit_info = Column(String(50), nullable=True)  # 감사의견
     reg_day = Column(String(8), nullable=True)  # 등록일
@@ -92,6 +103,18 @@ class Stock(Base):
     # Stock과 Candle 간의 관계 정의 (ORM 활용)
     # stock.candles로 해당 종목의 모든 캔들 데이터에 접근 가능
     candles = relationship("Candle", back_populates="stock", cascade="all, delete-orphan")
+
+
+class Sector(Base):
+    __tablename__ = "sectors"
+    __table_args__ = {'schema': 'live'}
+
+    sector_code = Column(String(10), primary_key=True, index=True, comment="업종코드")
+    sector_name = Column(String(100), nullable=False, comment="업종명")
+    market_name = Column(String(50), nullable=False, comment="소속 시장 (KOSPI/KOSDAQ)")
+
+    # ORM relationship: sector.stocks -> list of Stock
+    stocks = relationship("Stock", back_populates="sector")
 
 
 class Candle(Base):
@@ -266,10 +289,54 @@ def init_db():
             """))
             logger.info("  - simulation.financial_analysis_results 생성 완료")
             
+            # sectors 테이블 복제
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS simulation.sectors (LIKE live.sectors INCLUDING ALL)
+            """))
+            logger.info("  - simulation.sectors 생성 완료")
+            
             connection.commit()
         
         logger.info("'simulation' 스키마 테이블 복제 완료.")
-        logger.info("데이터베이스 초기화 성공.")
+        # --- [최종] 4. daily_analysis_results 테이블의 UNIQUE 제약조건 및 데이터 정합성 보장 ---
+        logger.info("--- 'daily_analysis_results' 테이블의 UNIQUE 제약조건 보장 작업 시작... ---")
+        with engine.connect() as connection:
+            trans = connection.begin()
+            try:
+                # 4-1. 제약조건 추가 전, 기존 중복 데이터 정리 (가장 최신 레코드 하나만 남김)
+                deleted = connection.execute(text("""
+                    DELETE FROM live.daily_analysis_results a
+                        USING live.daily_analysis_results b
+                    WHERE
+                        a.id < b.id
+                        AND a.analysis_date = b.analysis_date
+                        AND a.stock_code = b.stock_code
+                """)).rowcount
+                if deleted and deleted > 0:
+                    logger.info(f"  - live.daily_analysis_results에서 {deleted}개의 중복 데이터를 정리했습니다.")
+
+                # 4-2. ORM에 정의된 제약조건(_date_stock_uc)이 DB에 실제로 존재하는지 확인
+                constraint_exists = connection.execute(text("""
+                    SELECT 1 FROM pg_constraint WHERE conname = '_date_stock_uc'
+                """)).scalar()
+
+                if not constraint_exists:
+                    # 제약조건이 없는 경우에만 추가 (멱등성)
+                    connection.execute(text("""
+                        ALTER TABLE live.daily_analysis_results
+                        ADD CONSTRAINT _date_stock_uc UNIQUE (analysis_date, stock_code);
+                    """))
+                    logger.info("  - live.daily_analysis_results에 UNIQUE 제약조건 '_date_stock_uc'를 성공적으로 추가했습니다.")
+                else:
+                    logger.info("  - UNIQUE 제약조건 '_date_stock_uc'가 이미 존재합니다.")
+
+                trans.commit()
+            except Exception as e:
+                logger.error(f"  - 제약조건 보장 작업 중 오류 발생: {e}")
+                trans.rollback()
+                raise
+
+        logger.info("데이터베이스 초기화 및 정합성 보장 작업 성공.")
 
     except Exception as e:
         logger.error(f"데이터베이스 초기화 중 오류 발생: {e}")

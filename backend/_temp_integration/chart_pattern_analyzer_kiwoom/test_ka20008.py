@@ -65,7 +65,7 @@ if __name__ == '__main__':
 
     # 기본 파라미터: inds_cd=029 (서비스업) 기준일은 최근 예제와 맞추어 오늘 날짜 사용
     params = {
-        'inds_cd': '001',
+        'inds_cd': '129',
         'base_dt': datetime.now().strftime('%Y%m%d'),
         
     }
@@ -80,8 +80,10 @@ if __name__ == '__main__':
             chart_data = result['inds_mth_pole_qry']
             print(f"총 데이터 개수: {len(chart_data)}개")
             if len(chart_data) > 0:
-                print('첫 항목 샘플:', json.dumps(chart_data[0], ensure_ascii=False, indent=2))
-                print('마지막 항목 샘플:', json.dumps(chart_data[-1], ensure_ascii=False, indent=2))
+                #print('첫 항목 샘플:', json.dumps(chart_data[0], ensure_ascii=False, indent=2))
+                #print('마지막 항목 샘플:', json.dumps(chart_data[-1], ensure_ascii=False, indent=2))
+                print('전체 샘플:', json.dumps(chart_data, ensure_ascii=False, indent=2))
+                
         else:
             print("⚠️ 응답에 'inds_mth_pole_qry' 필드가 없습니다.")
 

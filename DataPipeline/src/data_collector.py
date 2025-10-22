@@ -626,7 +626,7 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
         if execution_mode == 'LIVE':
             # 키움 API 호출
             logger.info(f"[{stock_code}] 키움 API 호출: 최신 데이터 조회")
-            
+
             if timeframe in ['5m', '30m', '1h']:
                 # 분봉 데이터
                 interval_minutes = TIMEFRAME_TO_MINUTES[timeframe]
@@ -664,26 +664,44 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
             else:
                 logger.error(f"지원하지 않는 타임프레임: {timeframe}")
                 return False
-            
+
             # API 호출 제한
             time.sleep(0.2)
-            
+
             if chart_data_obj and chart_data_obj.data:
                 # 일봉 데이터도 전처리 활성화 (날짜 인덱스 설정)
                 chart_data_obj.preprocessing_required = True
                 df_all_candles = chart_data_obj.to_dataframe()
                 logger.info(f"[{stock_code}] API 응답 데이터 개수: {len(df_all_candles)}")
-                
+
                 # DB 이후의 신규 데이터 필터링
                 if not df_all_candles.empty:
-                    mask = df_all_candles.index > latest_db_timestamp
-                    df_new_candles = df_all_candles[mask].copy()
-                    
+                    # --- Timezone 통일: API DataFrame 인덱스를 UTC로 변환하여 DB(UTC)와 비교 ---
+                    try:
+                        # 인덱스가 tz-aware인지 확인
+                        if getattr(df_all_candles.index, 'tz', None) is None:
+                            # timezone-naive이면 KST로 간주 후 UTC로 변환
+                            df_all_candles.index = pd.to_datetime(df_all_candles.index).tz_localize(ZoneInfo('Asia/Seoul')).tz_convert(ZoneInfo('UTC'))
+                        else:
+                            df_all_candles.index = pd.to_datetime(df_all_candles.index).tz_convert(ZoneInfo('UTC'))
+
+                        # DB의 최신 타임스탬프을 UTC pandas Timestamp
+                        latest_db_timestamp_utc = pd.Timestamp(latest_db_timestamp)
+                        if getattr(latest_db_timestamp_utc, 'tz', None) is None:
+                            latest_db_timestamp_utc = latest_db_timestamp_utc.tz_localize(ZoneInfo('UTC'))
+                        else:
+                            latest_db_timestamp_utc = latest_db_timestamp_utc.tz_convert(ZoneInfo('UTC'))
+
+                        mask = df_all_candles.index > latest_db_timestamp_utc
+                        df_new_candles = df_all_candles[mask].copy()
+                    except Exception as e:
+                        logger.error(f"[{stock_code}] 타임존 처리 중 오류 발생: {e}")
+                        raise
+
                     if not df_new_candles.empty:
                         logger.info(f"[{stock_code}] 신규 데이터 {len(df_new_candles)}개 발견")
                     else:
                         logger.info(f"[{stock_code}] 신규 데이터가 없습니다.")
-                        
             else:
                 logger.warning(f"[{stock_code}] API로부터 데이터를 가져오지 못했습니다.")
                 return False

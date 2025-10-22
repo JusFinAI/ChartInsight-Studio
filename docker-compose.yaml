@@ -3,7 +3,9 @@
 # 공통 Airflow 설정: 모든 Airflow 서비스에 적용
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.10.5
+  build:
+    context: ./DataPipeline
+    dockerfile: Dockerfile
   env_file: .env.docker
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -25,7 +27,7 @@ x-airflow-common:
     - ./DataPipeline/data:/opt/airflow/data
     - ./DataPipeline/scripts:/opt/airflow/scripts
     - ./DataPipeline/plugins:/opt/airflow/plugins
-   
+
   user: "${AIRFLOW_UID}:${AIRFLOW_GID}"
   networks:
     - chartinsight-network

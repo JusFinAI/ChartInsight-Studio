@@ -111,7 +111,7 @@ def _load_simulation_monthly_data(code: str) -> pd.DataFrame:
         # fallback: sort index without period conversion
         df.index = pd.to_datetime(df.index)
 
-    # 컬럼명 정규화: API/스クリプト별로 원시 컬럼명이 다를 수 있으므로 표준 컬럼명으로 매핑합니다.
+    # 컬럼명 정규화: API/스ク립트별로 원시 컬럼명이 다를 수 있으므로 표준 컬럼명으로 매핑합니다.
     col_map = {
         'cur_prc': 'close',
         'open_pric': 'open',
@@ -173,15 +173,62 @@ def calculate_weighted_rs(target_df: pd.DataFrame, base_df: pd.DataFrame) -> flo
     else:
         base = base.rename(columns={base.columns[0]: 'date'})
 
-    merged_df = pd.merge(target[['date', 'close']], base[['date', 'close']], on='date', how='inner', suffixes=('_target', '_base'))
+    # Normalize both dataframes to YYYY-MM (period M) to avoid mismatches on day-of-month
+    try:
+        # 날짜를 KST 기준으로 정규화한 후 월(period)로 변환합니다.
+        target['date'] = pd.to_datetime(target['date'])
+        base['date'] = pd.to_datetime(base['date'])
+
+        # KST 처리: DB에는 UTC로 저장된 타임스탬프가 있으므로,
+        # tz-aware이면 KST로 변환하고, tz-naive이면 UTC로 로컬라이즈 후 KST로 변환합니다.
+        try:
+            if getattr(target['date'].dt, 'tz', None) is None:
+                target['date'] = target['date'].dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            else:
+                target['date'] = target['date'].dt.tz_convert('Asia/Seoul')
+        except Exception:
+            # 안전망: 강제 UTC->KST 변환
+            target['date'] = target['date'].dt.tz_localize('UTC', ambiguous='NaT', nonexistent='NaT').dt.tz_convert('Asia/Seoul')
+
+        try:
+            if getattr(base['date'].dt, 'tz', None) is None:
+                base['date'] = base['date'].dt.tz_localize('UTC').dt.tz_convert('Asia/Seoul')
+            else:
+                base['date'] = base['date'].dt.tz_convert('Asia/Seoul')
+        except Exception:
+            base['date'] = base['date'].dt.tz_localize('UTC', ambiguous='NaT', nonexistent='NaT').dt.tz_convert('Asia/Seoul')
+
+        target['ym'] = target['date'].dt.to_period('M')
+        base['ym'] = base['date'].dt.to_period('M')
+
+        # For months with multiple rows, keep the last (most recent) entry to represent the month
+        target_monthly = target.sort_values('date').groupby('ym', as_index=False).last()
+        base_monthly = base.sort_values('date').groupby('ym', as_index=False).last()
+
+        # Convert ym back to timestamp at period start for consistent merge keys
+        target_monthly['date'] = target_monthly['ym'].dt.to_timestamp()
+        base_monthly['date'] = base_monthly['ym'].dt.to_timestamp()
+
+        merged_df = pd.merge(target_monthly[['date', 'close']], base_monthly[['date', 'close']], on='date', how='inner', suffixes=('_target', '_base'))
+    except Exception as e:
+        logger.error(f"[RS DEBUG] 월단위 정규화 및 병합 중 오류: {e}")
+        return None
+
     if merged_df.empty:
         return None
 
     merged_df['date'] = pd.to_datetime(merged_df['date'])
     merged_df = merged_df.set_index('date').sort_index()
 
+    # Debug: log merged_df size and range for diagnostics
+    try:
+        logger.info(f"[RS DEBUG] merged_df len={len(merged_df)} range={merged_df.index[0]} ~ {merged_df.index[-1]}")
+    except Exception:
+        logger.info(f"[RS DEBUG] merged_df len={len(merged_df)}")
+
     # 완화: 최소 11개월 데이터 이상이면 계산하도록 허용
     if len(merged_df) < 11:
+        logger.info(f"[RS DEBUG] merged_df too short (len={len(merged_df)}), returning None")
         return None
 
     periods = {'3m': 3, '6m': 6, '9m': 9, '12m': 12}
@@ -299,36 +346,76 @@ def calculate_rs_for_stocks(stock_codes: List[str], execution_mode: str = 'LIVE'
                 logger.warning("시장 지수 데이터를 불러올 수 없습니다. 모든 종목에 대해 None 반환.")
                 return {code: {'market_rs': None, 'sector_rs': None} for code in stock_codes}
             
-            # DB에서 종목들의 시장 정보 조회
+            # DB에서 종목들의 시장/업종 정보 조회
             db = SessionLocal()
             try:
-                stocks_info = db.query(Stock.stock_code, Stock.market_name).filter(Stock.stock_code.in_(stock_codes)).all()
-                market_map = {info.stock_code: info.market_name for info in stocks_info}
+                stocks_info = db.query(Stock.stock_code, Stock.market_name, Stock.sector_code).filter(Stock.stock_code.in_(stock_codes)).all()
+                stock_info_map = {info.stock_code: info for info in stocks_info}
             finally:
                 db.close()
             
+            # --- [신규] 업종 캔들 데이터를 캐싱하기 위한 딕셔너리 ---
+            sector_candle_cache = {}
+
             # 각 종목별 RS 점수 계산
             for code in stock_codes:
                 try:
-                    market_name = market_map.get(code)
-                    if not market_name:
-                        logger.warning(f"{code} 종목의 시장 정보를 DB에서 찾을 수 없습니다.")
+                    stock_info = stock_info_map.get(code)
+                    if not stock_info:
+                        logger.warning(f"[{code}] 종목의 시장/업종 정보를 DB에서 찾을 수 없습니다.")
                         results[code] = {'market_rs': None, 'sector_rs': None}
                         continue
                     
                     # 종목의 월봉 데이터 로드
                     stock_data = get_candles(code, 'mon', execution_mode='LIVE')
                     if stock_data.empty:
-                        logger.warning(f"{code} 종목의 월봉 데이터가 없습니다.")
+                        logger.warning(f"[{code}] 종목의 월봉 데이터가 없습니다.")
                         results[code] = {'market_rs': None, 'sector_rs': None}
                         continue
+                    else:
+                        try:
+                            logger.debug(f"[RS DEBUG] [{code}] stock_mon len={len(stock_data)} range={stock_data.index[0]} ~ {stock_data.index[-1]}")
+                        except Exception:
+                            logger.debug(f"[RS DEBUG] [{code}] stock_mon len={len(stock_data)}")
                     
-                    # 시장 RS 계산
-                    market_data = kospi_data if 'KOSPI' in market_name else kosdaq_data
+                    # 시장 RS 계산 (market_name 정규화하여 KOSPI/KOSDAQ 판정)
+                    mn_raw = (stock_info.market_name or '')
+                    mn_norm = mn_raw.strip().upper()
+                    use_kospi = False
+                    if 'KOSPI' in mn_norm or '거래소' in mn_raw or '코스피' in mn_raw:
+                        use_kospi = True
+
+                    market_data = kospi_data if use_kospi else kosdaq_data
                     market_rs = calculate_weighted_rs(stock_data, market_data)
-                    
-                    # 섹터 RS는 임시로 None (Phase 2에서 구현 예정)
+                    if market_rs is None:
+                        logger.debug(f"[{code}] market_rs 계산 불가 (데이터 부족). market_name={mn_raw}")
+
+                    # --- Sector RS 계산 활성화 (안정성 및 로깅 강화) ---
                     sector_rs = None
+                    scode = getattr(stock_info, 'sector_code', None)
+                    if scode:
+                        try:
+                            if scode not in sector_candle_cache:
+                                logger.info(f"업종 지수 데이터 로드 및 캐싱: {scode}")
+                                sector_candle_cache[scode] = get_candles(scode, 'mon', execution_mode='LIVE')
+                            sector_data = sector_candle_cache.get(scode)
+                            if sector_data is None or sector_data.empty:
+                                logger.debug(f"[RS DEBUG] [{code}] sector({scode}) mon empty or None")
+                            else:
+                                try:
+                                    logger.debug(f"[RS DEBUG] [{code}] sector({scode}) mon len={len(sector_data)} range={sector_data.index[0]} ~ {sector_data.index[-1]}")
+                                except Exception:
+                                    logger.debug(f"[RS DEBUG] [{code}] sector({scode}) mon len={len(sector_data)}")
+                            if sector_data is None or sector_data.empty:
+                                logger.debug(f"[{code}] 업종({scode}) 데이터 없음 또는 빈 데이터")
+                            else:
+                                sector_rs = calculate_weighted_rs(stock_data, sector_data)
+                                if sector_rs is None:
+                                    logger.debug(f"[{code}] sector_rs 계산 불가 (데이터 부족) for sector {scode}")
+                        except Exception as e:
+                            logger.error(f"[{code}] 업종 지수 로드/계산 중 예외: sector_code={scode}, error={e}")
+                            sector_rs = None
+                    # --- [완료] ---
                     
                     results[code] = {
                         'market_rs': market_rs,

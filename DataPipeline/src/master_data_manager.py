@@ -17,6 +17,24 @@ from src.utils.logging_kst import configure_kst_logger
 
 logger = configure_kst_logger(__name__)
 
+# --- [최종] 종목코드 -> 업종코드 직접 매핑 ---
+# upName이 없어 자동 매핑이 불가능한 7개 핵심 종목에 대한 수동 매핑 테이블
+# Key: 종목코드, Value: 업종코드 ('live.sectors' 테이블 참조)
+STOCK_CODE_TO_SECTOR_CODE_MAP = {
+    # 은행/금융 (KOSPI)
+    '006220': '021',  # 제주은행 -> 금융 (KOSPI: 021)
+    '024110': '021',  # 기업은행 -> 금융 (KOSPI: 021)
+    '323410': '021',  # 카카오뱅크 -> 금융 (KOSPI: 021)
+
+    # 유통 (KOSPI)
+    '004970': '108',  # 신라교역 -> 유통 (use 108)
+
+    # 코스닥 매핑
+    '950190': '141',  # 고스트스튜디오 -> 오락/문화 (KOSDAQ: 141)
+    '054050': '127',  # 농우바이오 -> 기타제조 (KOSDAQ: 127)
+    '950140': '119',  # 잉글우드랩 -> 화학 (KOSDAQ: 119)
+}
+
 def _fetch_all_stock_codes_from_api() -> List[Dict]:
     """
     Kiwoom API ka10099를 호출하여 전체 종목 정보를 조회합니다.
@@ -147,6 +165,68 @@ def get_managed_stocks_from_db(db_session) -> List[str]:
         return []
 
 
+def backfill_sector_codes():
+    """
+    DB에 저장된 Stock 중 sector_code가 없는 종목들에 대해 업종 코드를 찾아 채웁니다.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("기존 Stock 데이터의 sector_code 백필 작업을 시작합니다.")
+
+    db = SessionLocal()
+    try:
+        # 1. 업종 마스터를 메모리에 로드
+        from .database import Sector
+        sectors = db.query(Sector).all()
+        sector_map = {s.sector_name: s.sector_code for s in sectors}
+        logger.info(f"{len(sector_map)}개의 업종 마스터 정보를 메모리에 로드했습니다.")
+
+        # 2. sector_code가 NULL인 모든 '분석 대상' 주식 조회
+        from src.config import FILTER_ZERO_CONFIG
+        from sqlalchemy import and_, or_, not_
+
+        name_exclude_conditions = [Stock.stock_name.ilike(f'%{keyword}%') for keyword in FILTER_ZERO_CONFIG['NAME_EXCLUDE_KEYWORDS']]
+        state_exclude_conditions = [Stock.state.ilike(f'%{keyword}%') for keyword in FILTER_ZERO_CONFIG['STATE_EXCLUDE_KEYWORDS']]
+        market_exclude_conditions = [Stock.market_name.ilike(f'%{keyword}%') for keyword in FILTER_ZERO_CONFIG.get('MARKET_EXCLUDE_KEYWORDS', [])]
+
+        stocks_to_update = db.query(Stock).filter(
+            and_(
+                Stock.sector_code.is_(None),
+                (Stock.list_count * Stock.last_price) / 100000000 >= FILTER_ZERO_CONFIG['MIN_MARKET_CAP_KRW'],
+                not_(or_(*name_exclude_conditions)),
+                not_(or_(*state_exclude_conditions)),
+                not_(or_(*market_exclude_conditions)),
+                Stock.order_warning == '0'
+            )
+        ).all()
+        logger.info(f"총 {len(stocks_to_update)}개의 '분석 대상' 종목에 대해 백필을 시도합니다.")
+
+        # helper import (fuzzy matching implementation lives in sector_mapper)
+        from src.utils.sector_mapper import _find_sector_code
+
+        updated_count = 0
+        for stock in stocks_to_update:
+            found_code, score = _find_sector_code(stock.stock_code, stock.industry_name, sector_map)
+
+            if found_code:
+                stock.sector_code = found_code
+                updated_count += 1
+            else:
+                logger.warning(f"[{stock.stock_code}] '{stock.industry_name}' 매칭 실패.")
+
+        if updated_count > 0:
+            db.commit()
+            logger.info(f"총 {updated_count}개 종목의 sector_code를 업데이트했습니다.")
+        else:
+            logger.info("업데이트할 종목이 없습니다.")
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"백필 작업 중 오류 발생: {e}", exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
 def sync_stock_master_to_db(db_session) -> List[str]:
     """
     API로부터 최신 종목 정보를 가져와 DB의 `Stock` 테이블과 차이를 동기화합니다.
@@ -252,40 +332,79 @@ def update_analysis_target_flags(db_session, stock_codes: List[str]) -> int:
     logger.info(f"총 {len(stock_codes)}개 종목에 대해 is_analysis_target 플래그 업데이트를 시작합니다.")
 
     try:
-        # 1. 주어진 stock_codes에 해당하는 Stock 객체들을 조회
-        target_stocks = db_session.query(Stock).filter(Stock.stock_code.in_(stock_codes)).all()
-        if not target_stocks:
+        if not stock_codes:
+            return 0
+
+        # 1. 필요한 필드만 DB에서 조회하여 메모리로 로드
+        target_stocks_info = db_session.query(
+            Stock.stock_code.label('code'),
+            Stock.stock_name.label('name'),
+            Stock.state.label('state'),
+            Stock.audit_info.label('auditInfo'),
+            Stock.last_price.label('lastPrice'),
+            Stock.list_count.label('listCount'),
+            Stock.order_warning.label('orderWarning')
+        ).filter(Stock.stock_code.in_(stock_codes)).all()
+
+        if not target_stocks_info:
             logger.warning("플래그를 업데이트할 종목이 DB에 없습니다.")
             return 0
 
-        # 2. 필터링을 위해 필요한 최소 정보만 메모리에 로드
-        stock_info_for_filter = [{
-            'code': s.stock_code, 'name': s.stock_name, 'state': s.state,
-            'auditInfo': s.audit_info, 'lastPrice': s.last_price, 'listCount': s.list_count
-        } for s in target_stocks]
+        # Row 객체들을 dict로 변환하여 apply_filter_zero에 전달
+        stock_info_for_filter = []
+        for row in target_stocks_info:
+            # SQLAlchemy Row/RowMapping 대응: 명시적 매핑으로 안전하게 변환
+            stock_info_for_filter.append({
+                'code': getattr(row, 'code'),
+                'name': getattr(row, 'name'),
+                'state': getattr(row, 'state'),
+                'auditInfo': getattr(row, 'auditInfo'),
+                'lastPrice': getattr(row, 'lastPrice'),
+                'listCount': getattr(row, 'listCount'),
+                'orderWarning': getattr(row, 'orderWarning')
+            })
 
-        # [임시 디버그] apply_filter_zero에 입력되는 데이터 샘플을 확실히 출력하도록
-        # - INFO가 필터링되는 환경에서 로그가 보이지 않는 문제를 빠르게 확인하기 위해
-        #   logger.warning과 print를 함께 사용합니다. (후속 검증 후 반드시 되돌릴 것)
         if stock_info_for_filter:
             logger.info(f"apply_filter_zero에 전달될 데이터 샘플 (첫 번째 종목): {stock_info_for_filter[0]}")
 
-        # 3. '필터 제로' 적용
+        # 2. 필터 적용하여 최종 분석 대상 코드 집합 결정
         filtered_stocks_info = apply_filter_zero(stock_info_for_filter)
         analysis_target_codes = {s['code'] for s in filtered_stocks_info}
+        logger.info(f"{len(stock_codes)}개 종목 중 {len(analysis_target_codes)}개가 분석 대상으로 선정되었습니다.")
 
-        logger.info(f"{len(target_stocks)}개 종목 중 {len(analysis_target_codes)}개가 분석 대상으로 선정되었습니다.")
+        # 3. 현재 DB의 플래그 상태를 한 번의 쿼리로 가져와 메모리에서 비교
+        current_statuses = db_session.query(Stock.stock_code, Stock.is_analysis_target).filter(Stock.stock_code.in_(stock_codes)).all()
+        status_map = {code: status for code, status in current_statuses}
 
-        # 4. 플래그 업데이트
+        # 4. 메모리 내에서 변경 대상 식별
+        to_update_true: List[str] = []
+        to_update_false: List[str] = []
+        for code in stock_codes:
+            should_be_target = code in analysis_target_codes
+            current_status = status_map.get(code)
+
+            if current_status is not None and current_status != should_be_target:
+                if should_be_target:
+                    to_update_true.append(code)
+                else:
+                    to_update_false.append(code)
+
+        # 5. 배치 업데이트 실행
         update_count = 0
-        for stock in target_stocks:
-            should_be_target = stock.stock_code in analysis_target_codes
-            if stock.is_analysis_target != should_be_target:
-                stock.is_analysis_target = should_be_target
-                update_count += 1
+        if to_update_true:
+            db_session.query(Stock).filter(Stock.stock_code.in_(to_update_true)).update({
+                'is_analysis_target': True
+            }, synchronize_session=False)
+            update_count += len(to_update_true)
+
+        if to_update_false:
+            db_session.query(Stock).filter(Stock.stock_code.in_(to_update_false)).update({
+                'is_analysis_target': False
+            }, synchronize_session=False)
+            update_count += len(to_update_false)
 
         if update_count > 0:
-            logger.info(f"{update_count}개 종목의 플래그가 변경되었습니다. DB에 커밋합니다.")
+            logger.info(f"{update_count}개 종목의 is_analysis_target 플래그가 변경되었습니다. DB에 커밋합니다.")
             db_session.commit()
         else:
             logger.info("is_analysis_target 플래그에 변경 사항이 없습니다.")
