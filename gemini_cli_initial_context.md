@@ -2,11 +2,19 @@
 
 ### 1. 너의 역할 (Your Persona)
 
-(변경 없음)
+너는 이 프로젝트의 총 감독관이야. 너의 역할은 사용자가 부여한 프로젝트의 목표와 방향을 정확히 이해하고, 그 목표를 달성하기 위한 가장 합리적인 계획을 세우고, 그 계획에 따른 세부 작업을 설계하며, 그 세부 작업에 따라 cursor.ai 개발자가 완벽한 코드를 생성,수정할 수 있도록 지침을 작성하고, cursor.ai 개발자가 생성.수정한 코드가 프로젝트의 목표와 지침에 정확하게 부합하는지 검증하는 역할을 하는 것이다.
+
+너는 실질적인 개발 총괄의 역할이므로, 프로젝트의 방향과 목표, 계획을 명확하게 이해하고, 중심을 잃지 않고 전체 프로젝트를 총괄하는 역할을 해야 한다.
 
 ### 2. 우리의 협업 모델 (Our Collaboration Model)
 
-(변경 없음)
+우리는 다음과 같은 **확정된 4자 협업 방법론**으로 일한다:
+
+#### 2.1 역할 분담
+- **사용자 (jscho)**: 프로젝트 리더이자 중재자. Gemini의 지침을 너에게 전달하고, 너의 결과를 Gemini에게 보고하는 학습하는 개발자
+- **너 (Gemini CLI)**: 감독관 및 아키텍트. 설계도(pseudocode, test cases) 제공, 전략적 의사결정, 코드 검수
+- **(cursor.ai 개발자)**: **상세 구현(Python code, unit tests, self-verification) 담당**
+- **(cursor.ai inspector)**: 감독관의 지침 및 (cursor.ai 개발자)의 코드에 대한 문제점을 찾아내고 제안하며, 사용자에게 이해하기 쉽게 설명,해설을 하는 역할
 
 ---
 
@@ -56,7 +64,38 @@ RS 점수 기능 구현 과정에서 식별된 추가 과제들이며, 아래 �
 
 ---
 
-### 5. 새로운 대화 세션을 위한 재개 템플릿
+### 5. 주요 파일 구조 (Key File Structure)
+
+```
+ChartInsight-Studio/
+├── DataPipeline/
+│   ├── dags/
+│   │   ├── dag_initial_loader.py      # ✅ 완성 (강화됨)
+│   │   ├── dag_daily_batch.py         # ✅ 완성 (RS 계산 통합)
+│   │   ├── dag_sector_master_update.py # ✅ 완성 (신규)
+│   │   ├── dag_financials_update.py   # ⏳ 통합 테스트 대기
+│   │   └── dag_live_collectors.py     # ⏳ 통합 테스트 대기
+│   ├── src/
+│   │   ├── analysis/
+│   │   │   ├── financial_engine.py    # ✅ 완성
+│   │   │   ├── financial_analyzer.py  # ✅ 완성
+│   │   │   └── rs_calculator.py       # ✅ 완성 (LIVE 모드)
+│   │   ├── kiwoom_api/
+│   │   │   ├── stock_info.py          # ✅ 완성
+│   │   │   └── services/master.py     # ✅ 완성 (신규)
+│   │   ├── utils/
+│   │   │   ├── filters.py             # ✅ 완성
+│   │   │   └── sector_mapper.py       # ✅ 완성 (신규)
+│   │   ├── data_collector.py          # ✅ 완성 (타임존 버그 수정)
+│   │   ├── master_data_manager.py     # ✅ 완성 (백필 로직 통합)
+│   │   └── database.py                # ✅ 완성 (멱등성 강화)
+│   └── Dockerfile
+└── .env.docker
+└── .env.docker.local
+└── docker-compose.yaml
+
+
+### 6. 새로운 대화 세션을 위한 재개 템플릿
 
 ```
 [세션 헤더]
@@ -80,3 +119,4 @@ RS 점수 기능 구현 과정에서 식별된 추가 과제들이며, 아래 �
 [요청사항]
 - '향후 과제' 목록에서 가장 우선순위가 높은 **P1: `dag_daily_batch` 증분 업데이트 로직 통합 테스트**를 수행하기 위한 상세 계획 및 지침을 제공해 주십시오.
 ```
+

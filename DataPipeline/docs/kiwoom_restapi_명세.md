@@ -281,7 +281,102 @@ Response Body
 
 ---
 
-# 3. ka20008 (업종월봉조회요청) 
+# 3. ka10083 (주식월봉차트조회요청) 
+
+```
+import requests
+import json
+
+# 주식월봉차트조회요청
+def fn_ka10083(token, data, cont_yn='N', next_key=''):
+	# 1. 요청할 API URL
+	#host = 'https://mockapi.kiwoom.com' # 모의투자
+	host = 'https://api.kiwoom.com' # 실전투자
+	endpoint = '/api/dostk/chart'
+	url =  host + endpoint
+
+	# 2. header 데이터
+	headers = {
+		'Content-Type': 'application/json;charset=UTF-8', # 컨텐츠타입
+		'authorization': f'Bearer {token}', # 접근토큰
+		'cont-yn': cont_yn, # 연속조회여부
+		'next-key': next_key, # 연속조회키
+		'api-id': 'ka10083', # TR명
+	}
+
+	# 3. http POST 요청
+	response = requests.post(url, headers=headers, json=data)
+
+	# 4. 응답 상태 코드와 데이터 출력
+	print('Code:', response.status_code)
+	print('Header:', json.dumps({key: response.headers.get(key) for key in ['next-key', 'cont-yn', 'api-id']}, indent=4, ensure_ascii=False))
+	print('Body:', json.dumps(response.json(), indent=4, ensure_ascii=False))  # JSON 응답을 파싱하여 출력
+
+# 실행 구간
+if __name__ == '__main__':
+	# 1. 토큰 설정
+	MY_ACCESS_TOKEN = '사용자 AccessToken' # 접근토큰
+
+	# 2. 요청 데이터
+	params = {
+		'stk_cd': '005930', # 종목코드 거래소별 종목코드 (KRX:039490,NXT:039490_NX,SOR:039490_AL)
+		'base_dt': '20250905', # 기준일자 YYYYMMDD
+		'upd_stkpc_tp': '1', # 수정주가구분 0 or 1
+	}
+
+	# 3. API 실행
+	fn_ka10083(token=MY_ACCESS_TOKEN, data=params)
+
+	# next-key, cont-yn 값이 있을 경우
+	# fn_ka10083(token=MY_ACCESS_TOKEN, data=params, cont_yn='Y', next_key='nextkey..')
+
+```
+---
+Request Body
+
+{
+	"stk_cd": "005930",
+	"base_dt": "20250905",
+	"upd_stkpc_tp": "1"
+}
+---
+Response Body
+
+{
+    "stk_cd": "005930",
+    "stk_mth_pole_chart_qry": [
+        {
+            "cur_prc": "78900",
+            "trde_qty": "215040968",
+            "trde_prica": "15774571011618",
+            "dt": "20250901",
+            "open_pric": "68400",
+            "high_pric": "79500",
+            "low_pric": "67500",
+            "pred_pre": "+9200",
+            "pred_pre_sig": "2",
+            "trde_tern_rt": "+3.38"
+        },
+        {
+            "cur_prc": "69700",
+            "trde_qty": "258905351",
+            "trde_prica": "18306059690160",
+            "dt": "20250804",
+            "open_pric": "69500",
+            "high_pric": "72400",
+            "low_pric": "68300",
+            "pred_pre": "+13600",
+            "pred_pre_sig": "2",
+            "trde_tern_rt": "+4.37"
+        },
+    ],
+    "return_code": 0,
+    "return_msg": "정상적으로 처리되었습니다"
+}
+
+---
+
+# 4. ka20008 (업종월봉조회요청) 
 
 ```
 import requests
@@ -369,14 +464,15 @@ Response Body
 }
 
 ---
-# 4. ka10083 (주식월봉차트조회요청) 
+
+# 5. ka20007 (업종주봉조회요청) 
 
 ```
 import requests
 import json
 
-# 주식월봉차트조회요청
-def fn_ka10083(token, data, cont_yn='N', next_key=''):
+# 업종주봉조회요청
+def fn_ka20007(token, data, cont_yn='N', next_key=''):
 	# 1. 요청할 API URL
 	#host = 'https://mockapi.kiwoom.com' # 모의투자
 	host = 'https://api.kiwoom.com' # 실전투자
@@ -389,7 +485,7 @@ def fn_ka10083(token, data, cont_yn='N', next_key=''):
 		'authorization': f'Bearer {token}', # 접근토큰
 		'cont-yn': cont_yn, # 연속조회여부
 		'next-key': next_key, # 연속조회키
-		'api-id': 'ka10083', # TR명
+		'api-id': 'ka20007', # TR명
 	}
 
 	# 3. http POST 요청
@@ -407,55 +503,132 @@ if __name__ == '__main__':
 
 	# 2. 요청 데이터
 	params = {
-		'stk_cd': '005930', # 종목코드 거래소별 종목코드 (KRX:039490,NXT:039490_NX,SOR:039490_AL)
+		'inds_cd': '001', # 업종코드 001:종합(KOSPI), 002:대형주, 003:중형주, 004:소형주 101:종합(KOSDAQ), 201:KOSPI200, 302:KOSTAR, 701: KRX100 나머지 ※ 업종코드 참고
 		'base_dt': '20250905', # 기준일자 YYYYMMDD
-		'upd_stkpc_tp': '1', # 수정주가구분 0 or 1
 	}
 
 	# 3. API 실행
-	fn_ka10083(token=MY_ACCESS_TOKEN, data=params)
+	fn_ka20007(token=MY_ACCESS_TOKEN, data=params)
 
 	# next-key, cont-yn 값이 있을 경우
-	# fn_ka10083(token=MY_ACCESS_TOKEN, data=params, cont_yn='Y', next_key='nextkey..')
-
+	# fn_ka20007(token=MY_ACCESS_TOKEN, data=params, cont_yn='Y', next_key='nextkey..')
 ```
 ---
 Request Body
-
 {
-	"stk_cd": "005930",
-	"base_dt": "20250905",
-	"upd_stkpc_tp": "1"
+	"inds_cd" : "001",
+	"base_dt" : "20250905"
 }
 ---
+
 Response Body
 
 {
-    "stk_cd": "005930",
-    "stk_mth_pole_chart_qry": [
+    "inds_cd": "001",
+    "inds_stk_pole_qry": [
         {
-            "cur_prc": "78900",
-            "trde_qty": "215040968",
-            "trde_prica": "15774571011618",
-            "dt": "20250901",
-            "open_pric": "68400",
-            "high_pric": "79500",
-            "low_pric": "67500",
-            "pred_pre": "+9200",
-            "pred_pre_sig": "2",
-            "trde_tern_rt": "+3.38"
+            "cur_prc": "252127",
+            "trde_qty": "393564",
+            "dt": "20250210",
+            "open_pric": "251064",
+            "high_pric": "252733",
+            "low_pric": "249918",
+            "trde_prica": "10582466"
         },
         {
-            "cur_prc": "69700",
-            "trde_qty": "258905351",
-            "trde_prica": "18306059690160",
-            "dt": "20250804",
-            "open_pric": "69500",
-            "high_pric": "72400",
-            "low_pric": "68300",
-            "pred_pre": "+13600",
-            "pred_pre_sig": "2",
-            "trde_tern_rt": "+4.37"
+            "cur_prc": "252192",
+            "trde_qty": "2339138",
+            "dt": "20250203",
+            "open_pric": "246874",
+            "high_pric": "253763",
+            "low_pric": "243761",
+            "trde_prica": "54703685"
+        },
+    ],
+    "return_code": 0,
+    "return_msg": "정상적으로 처리되었습니다"
+}
+
+---
+
+# 5. ka20007 (업종주봉조회요청) 
+
+```
+import requests
+import json
+
+# 업종일봉조회요청
+def fn_ka20006(token, data, cont_yn='N', next_key=''):
+	# 1. 요청할 API URL
+	#host = 'https://mockapi.kiwoom.com' # 모의투자
+	host = 'https://api.kiwoom.com' # 실전투자
+	endpoint = '/api/dostk/chart'
+	url =  host + endpoint
+
+	# 2. header 데이터
+	headers = {
+		'Content-Type': 'application/json;charset=UTF-8', # 컨텐츠타입
+		'authorization': f'Bearer {token}', # 접근토큰
+		'cont-yn': cont_yn, # 연속조회여부
+		'next-key': next_key, # 연속조회키
+		'api-id': 'ka20006', # TR명
+	}
+
+	# 3. http POST 요청
+	response = requests.post(url, headers=headers, json=data)
+
+	# 4. 응답 상태 코드와 데이터 출력
+	print('Code:', response.status_code)
+	print('Header:', json.dumps({key: response.headers.get(key) for key in ['next-key', 'cont-yn', 'api-id']}, indent=4, ensure_ascii=False))
+	print('Body:', json.dumps(response.json(), indent=4, ensure_ascii=False))  # JSON 응답을 파싱하여 출력
+
+# 실행 구간
+if __name__ == '__main__':
+	# 1. 토큰 설정
+	MY_ACCESS_TOKEN = '사용자 AccessToken' # 접근토큰
+
+	# 2. 요청 데이터
+	params = {
+		'inds_cd': '001', # 업종코드 001:종합(KOSPI), 002:대형주, 003:중형주, 004:소형주 101:종합(KOSDAQ), 201:KOSPI200, 302:KOSTAR, 701: KRX100 나머지 ※ 업종코드 참고
+		'base_dt': '20250905', # 기준일자 YYYYMMDD
+	}
+
+	# 3. API 실행
+	fn_ka20006(token=MY_ACCESS_TOKEN, data=params)
+
+	# next-key, cont-yn 값이 있을 경우
+	# fn_ka20006(token=MY_ACCESS_TOKEN, data=params, cont_yn='Y', next_key='nextkey..')
+```
+---
+Request Body
+{
+	"inds_cd" : "001",
+	"base_dt" : "20250905"
+}
+---
+
+Response Body
+
+{
+    "inds_cd": "001",
+    "inds_dt_pole_qry": [
+        {
+            "cur_prc": "252127",
+            "trde_qty": "393564",
+            "dt": "20250210",
+            "open_pric": "251064",
+            "high_pric": "252733",
+            "low_pric": "249918",
+            "trde_prica": "10582466"
+        },
+        {
+            "cur_prc": "252192",
+            "trde_qty": "419872",
+            "dt": "20250207",
+            "open_pric": "253209",
+            "high_pric": "253763",
+            "low_pric": "251901",
+            "trde_prica": "10240141"
         },
     ],
     "return_code": 0,

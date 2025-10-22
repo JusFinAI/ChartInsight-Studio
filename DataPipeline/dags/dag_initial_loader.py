@@ -154,8 +154,8 @@ def _run_initial_load_task(db_session=None, **kwargs):
         else:
             logger.warning("API로부터 업종 데이터를 가져오지 못했습니다.")
 
-        # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 월봉 전체 적재 ---
-        logger.info("기준 데이터(지수, 업종)의 전체 과거 월봉 적재를 시작합니다.")
+        # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 일/주/월봉 전체 적재 ---
+        logger.info("기준 데이터(지수, 업종)의 전체 과거 일/주/월봉 적재를 시작합니다.")
         index_codes = ['001', '101']
         sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
         baseline_codes = index_codes + sector_codes
@@ -166,14 +166,42 @@ def _run_initial_load_task(db_session=None, **kwargs):
         db_session.execute(stmt.on_conflict_do_nothing(index_elements=['stock_code']))
         db_session.commit()
 
+        # 처리할 타임프레임 목록 정의
+        baseline_timeframes = ['d', 'w', 'mon']
+
+        # [개선] 에러 카운팅을 통한 안정성 확보
+        error_count = 0
+        total_baseline_tasks = len(baseline_codes) * len(baseline_timeframes)
+
         for code in baseline_codes:
-            try:
-                load_initial_history(stock_code=code, timeframe='mon', period='10y', execution_mode=execution_mode)
-                time.sleep(0.3)
-            except Exception as e:
-                logger.error(f"기준 데이터 적재 중 오류: {code} - {e}", exc_info=True)
-                continue
-        logger.info("기준 데이터 과거 월봉 적재 완료.")
+            for timeframe in baseline_timeframes:
+                try:
+                    # [개선] TIMEFRAME_PERIOD_MAP 변수의 존재 여부를 확인하는 방어적 코드
+                    if 'TIMEFRAME_PERIOD_MAP' in globals():
+                        period = TIMEFRAME_PERIOD_MAP.get(timeframe, '10y')
+                    else:
+                        # TIMEFRAME_PERIOD_MAP이 없는 경우를 대비한 안전장치
+                        period = '10y' if timeframe == 'mon' else '5y'
+
+                    load_initial_history(
+                        stock_code=code,
+                        timeframe=timeframe,
+                        period=period,
+                        execution_mode=execution_mode
+                    )
+                    # [개선] API Rate Limiting 강화
+                    time.sleep(0.5)
+                except Exception as e:
+                    error_count += 1
+                    # [개선] 에러 로그에 timeframe 정보 추가
+                    logger.error(f"기준 데이터 적재 중 오류: {code} ({timeframe}) - {e}", exc_info=True)
+                    continue
+
+        # [개선] 에러율이 30%를 초과하면 DAG 실패 처리
+        if total_baseline_tasks > 0 and (error_count / total_baseline_tasks) > 0.3:
+            raise AirflowException(f"너무 많은 기준 데이터 적재에 실패했습니다. (총 {total_baseline_tasks}개 중 {error_count}개 실패)")
+
+        logger.info("기준 데이터 과거 일/주/월봉 적재 완료.")
 
         for stock_code in target_stocks:
             all_success = True

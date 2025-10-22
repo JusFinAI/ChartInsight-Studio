@@ -31,13 +31,7 @@ sys.path.insert(0, project_root)
 
 # 로컬 모듈 임포트
 from src.database import SessionLocal, Candle, Stock
-from src.kiwoom_api.services.chart import (
-    get_minute_chart,
-    get_daily_stock_chart,
-    get_weekly_stock_chart,
-    get_monthly_stock_chart,
-    get_monthly_inds_chart,
-)
+from src.kiwoom_api.services.chart import get_chart, get_minute_chart
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -483,8 +477,17 @@ def load_initial_history(stock_code: str, timeframe: str, base_date: str = None,
             # 키움 API 호출
             logger.info(f"[{stock_code}] 키움 API 호출: {num_candles}개 캔들 요청")
             
-            if timeframe in ['5m', '30m', '1h']:
-                # 분봉 데이터
+            if timeframe in ['d', 'w', 'mon']:
+                # 통합 라우팅 함수 사용
+                chart_data_obj = get_chart(
+                    code=stock_code,
+                    timeframe=timeframe,
+                    base_date=base_date,
+                    num_candles=num_candles,
+                    auto_pagination=True
+                )
+            elif timeframe in ['5m', '30m', '1h']:
+                # 분봉 데이터는 종목 전용으로 get_minute_chart 유지
                 interval_minutes = TIMEFRAME_TO_MINUTES[timeframe]
                 chart_data_obj = get_minute_chart(
                     stock_code=stock_code,
@@ -493,19 +496,6 @@ def load_initial_history(stock_code: str, timeframe: str, base_date: str = None,
                     num_candles=num_candles,
                     auto_pagination=True
                 )
-            elif timeframe == 'd':
-                chart_data_obj = get_daily_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
-            elif timeframe == 'w':
-                chart_data_obj = get_weekly_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
-            elif timeframe == 'mon':
-                if len(stock_code) == 3:
-                    # 업종/지수 조회: get_monthly_inds_chart는 modified_price_type를 사용하지 않으므로 전달하지 않습니다.
-                    chart_data_obj = get_monthly_inds_chart(inds_code=stock_code, base_date=base_date, num_candles=num_candles, auto_pagination=True)
-                else:
-                    chart_data_obj = get_monthly_stock_chart(stock_code=stock_code, base_date=base_date, num_candles=num_candles, modified_price_type='1', auto_pagination=True)
-            else:
-                logger.error(f"지원하지 않는 타임프레임: {timeframe}")
-                return False
             
             # API 호출 제한
             time.sleep(0.2)
@@ -627,7 +617,15 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
             # 키움 API 호출
             logger.info(f"[{stock_code}] 키움 API 호출: 최신 데이터 조회")
 
-            if timeframe in ['5m', '30m', '1h']:
+            if timeframe in ['d', 'w', 'mon']:
+                chart_data_obj = get_chart(
+                    code=stock_code,
+                    timeframe=timeframe,
+                    base_date=None,
+                    num_candles=500,
+                    auto_pagination=False
+                )
+            elif timeframe in ['5m', '30m', '1h']:
                 # 분봉 데이터
                 interval_minutes = TIMEFRAME_TO_MINUTES[timeframe]
                 chart_data_obj = get_minute_chart(
@@ -635,30 +633,6 @@ def collect_and_store_candles(stock_code: str, timeframe: str, execution_mode: s
                     interval=str(interval_minutes),
                     base_date=None,  # 최신 데이터 요청
                     num_candles=500,  # 충분한 개수로 요청
-                    auto_pagination=False
-                )
-            elif timeframe == 'd':
-                # 일봉 데이터 (명시적 종목 호출)
-                chart_data_obj = get_daily_stock_chart(
-                    stock_code=stock_code,
-                    base_date=None,
-                    num_candles=30,  # 최근 30일
-                    auto_pagination=False
-                )
-            elif timeframe == 'w':
-                # 주봉 데이터 (명시적 종목 호출)
-                chart_data_obj = get_weekly_stock_chart(
-                    stock_code=stock_code,
-                    base_date=None,
-                    num_candles=10,  # 최근 10주
-                    auto_pagination=False
-                )
-            elif timeframe == 'mon':
-                # 월봉 데이터 (명시적 종목 호출)
-                chart_data_obj = get_monthly_stock_chart(
-                    stock_code=stock_code,
-                    base_date=None,
-                    num_candles=5,  # 최근 5개월
                     auto_pagination=False
                 )
             else:
