@@ -40,6 +40,5 @@ airflow/logs/
 
 # Data files
 **/*.parquet
-**/*.csv
 *.db
 *.sqlite

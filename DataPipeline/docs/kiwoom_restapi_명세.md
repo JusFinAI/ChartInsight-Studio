@@ -551,7 +551,8 @@ Response Body
 
 ---
 
-# 5. ka20007 (업종주봉조회요청) 
+
+# 6. ka20006 (업종일봉조회요청) 
 
 ```
 import requests
@@ -619,8 +620,7 @@ Response Body
             "open_pric": "251064",
             "high_pric": "252733",
             "low_pric": "249918",
-            "trde_prica": "10582466"
-        },
+            "trde_prica": "10582466"        },
         {
             "cur_prc": "252192",
             "trde_qty": "419872",

@@ -66,16 +66,29 @@ def _fetch_latest_low_frequency_candles(**kwargs):
         logger.info("SIMULATION 모드: 저빈도 캔들 수집을 건너뜁니다.")
         return
 
+    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
+    ti = kwargs['ti']
+    _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
+    if isinstance(_xcom_result, dict):
+        stock_codes_from_xcom = _xcom_result.get('codes', [])
+    elif isinstance(_xcom_result, list):
+        stock_codes_from_xcom = _xcom_result
+    else:
+        stock_codes_from_xcom = []
+
     db = SessionLocal()
     try:
-        # 1. 분석 대상 '종목' 코드 조회
-        stock_codes = {s.stock_code for s in db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()}
         # 2. 전체 '업종' 코드 조회
         sector_codes = {s.sector_code for s in db.query(Sector.sector_code).all()}
         # 3. '시장 지수' 코드 추가
         market_index_codes = {'001', '101'}
-        # 4. 모든 코드 통합
-        all_codes_to_update = list(stock_codes | sector_codes | market_index_codes)
+        # 4. XCom으로 받은 종목 리스트와 업종/지수 코드를 통합
+        try:
+            stock_set = set(stock_codes_from_xcom)
+        except Exception:
+            stock_set = set()
+
+        all_codes_to_update = list(stock_set | sector_codes | market_index_codes)
     finally:
         db.close()
 
@@ -119,13 +132,15 @@ def _calculate_rs_score(**kwargs):
     # execution_mode 전달을 위해 kwargs에서 읽어옵니다.
     execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
 
-    # Step 1: DB에서 직접 분석 대상 종목 리스트를 조회합니다.
-    db = SessionLocal()
-    try:
-        target_codes_tuples = db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()
-        filtered_codes = [code for code, in target_codes_tuples]
-    finally:
-        db.close()
+    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
+    ti = kwargs['ti']
+    _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
+    if isinstance(_xcom_result, dict):
+        filtered_codes = _xcom_result.get('codes', [])
+    elif isinstance(_xcom_result, list):
+        filtered_codes = _xcom_result
+    else:
+        filtered_codes = []
 
     if not filtered_codes:
         logger.warning("DB에서 분석 대상 종목을 찾지 못했습니다. Task를 건너뜁니다.")
@@ -162,16 +177,18 @@ def _fetch_financial_grades_from_db(**kwargs):
     logger = logging.getLogger(__name__)
     ti = kwargs['ti']
 
-    # Step 1: DB에서 직접 분석 대상 종목 리스트를 조회합니다.
-    db = SessionLocal()
-    try:
-        target_codes_tuples = db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()
-        filtered_codes = [code for code, in target_codes_tuples]
-    finally:
-        db.close()
+    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
+    ti = kwargs['ti']
+    _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
+    if isinstance(_xcom_result, dict):
+        filtered_codes = _xcom_result.get('codes', [])
+    elif isinstance(_xcom_result, list):
+        filtered_codes = _xcom_result
+    else:
+        filtered_codes = []
 
     if not filtered_codes:
-        logger.warning("DB에서 분석 대상 종목 리스트를 찾지 못했습니다. Task를 건너뜁니다.")
+        logger.warning("XCom으로부터 분석 대상 종목 리스트를 찾지 못했습니다. Task를 건너뜁니다.")
         return {}
 
     logger.info(f"총 {len(filtered_codes)}개 종목의 재무 등급을 DB에서 조회합니다.")
@@ -236,16 +253,17 @@ def _run_technical_analysis(**kwargs):
     ti = kwargs['ti']
     execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
 
-    # Step 1: DB에서 직접 분석 대상 종목 리스트를 조회합니다.
-    db = SessionLocal()
-    try:
-        target_codes_tuples = db.query(Stock.stock_code).filter(Stock.is_analysis_target == True).all()
-        filtered_codes = [code for code, in target_codes_tuples]
-    finally:
-        db.close()
+    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
+    _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
+    if isinstance(_xcom_result, dict):
+        filtered_codes = _xcom_result.get('codes', [])
+    elif isinstance(_xcom_result, list):
+        filtered_codes = _xcom_result
+    else:
+        filtered_codes = []
 
     if not filtered_codes:
-        logger.warning("DB에서 분석 대상 종목 리스트를 찾지 못했습니다. Task를 건너뜁니다.")
+        logger.warning("XCom으로부터 분석 대상 종목 리스트를 찾지 못했습니다. Task를 건너뜁니다.")
         return None
 
     logger.info(f"총 {len(filtered_codes)}개 종목에 대한 기술적 분석을 시작합니다.")
@@ -460,20 +478,65 @@ with DAG(
         logger = logging.getLogger(__name__)
         ti = kwargs['ti']
 
-        # 1. 선행 Task로부터 XCom으로 전체 활성 종목 코드 리스트를 받음
-        all_active_codes = ti.xcom_pull(task_ids='sync_stock_master')
-        if not all_active_codes:
-            logger.warning("XCom으로부터 활성 종목 리스트를 받지 못했습니다. Task를 건너뜁니다.")
-            return {"status": "skipped", "updated_count": 0}
-
-        logger.info(f"XCom으로부터 {len(all_active_codes)}개의 활성 종목 리스트를 받았습니다.")
+        # 1. 파라미터 우선 처리: UI로 전달된 target_stock_codes가 있으면 우선 사용
+        params = kwargs.get('params', {})
+        target_stock_codes_param = params.get('target_stock_codes') or params.get('target_stock_codes', [])
 
         db = SessionLocal()
         try:
-            # 2. 받은 리스트를 인자로 전달하여 DB 플래그 업데이트
-            update_count = update_analysis_target_flags(db, all_active_codes)
-            logger.info(f"총 {update_count}개 종목의 플래그가 업데이트되었습니다.")
-            return {"status": "completed", "updated_count": update_count}
+            codes_to_process = []
+            if target_stock_codes_param:
+                # 지원 입력 형태: 배열 또는 쉼표로 구분된 문자열
+                if isinstance(target_stock_codes_param, str):
+                    codes_to_process = [c.strip() for c in target_stock_codes_param.split(',') if c.strip()]
+                elif isinstance(target_stock_codes_param, (list, tuple)):
+                    codes_to_process = [str(c).strip() for c in target_stock_codes_param if str(c).strip()]
+
+                logger.info(f"target_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
+            else:
+                # 2. 파라미터가 없으면 기존 흐름: sync_task의 XCom 결과 사용
+                all_active_codes = ti.xcom_pull(task_ids='sync_stock_master')
+                if not all_active_codes:
+                    logger.warning("XCom으로부터 활성 종목 리스트를 받지 못했습니다. Task를 건너뜁니다.")
+                    return {"status": "skipped", "codes": [], "processed_count": 0, "missing": []}
+                codes_to_process = all_active_codes
+                logger.info(f"XCom으로부터 {len(codes_to_process)}개의 활성 종목 리스트를 받았습니다.")
+
+            if not codes_to_process:
+                logger.warning("처리할 대상 종목이 없습니다.")
+                return {"status": "skipped", "codes": [], "processed_count": 0, "missing": []}
+
+            # 3. 입력 검증: DB에 실제 존재하는 종목만 선별 (대량 처리 대비 배치)
+            valid_codes = []
+            missing_codes = []
+            batch_size = 500
+            for i in range(0, len(codes_to_process), batch_size):
+                batch = codes_to_process[i:i+batch_size]
+                existing = db.query(Stock.stock_code).filter(Stock.stock_code.in_(batch)).all()
+                existing_set = {c for c, in existing}
+                valid_codes.extend(list(existing_set))
+                missing = [c for c in batch if c not in existing_set]
+                missing_codes.extend(missing)
+
+            if missing_codes:
+                logger.warning(f"입력된 종목 중 DB에 존재하지 않는 코드 {len(missing_codes)}개: {missing_codes[:10]}{'...' if len(missing_codes)>10 else ''}")
+
+            if not valid_codes:
+                logger.warning("검증된 유효한 종목 코드가 없어 종료합니다.")
+                return {"status": "skipped", "codes": [], "processed_count": 0, "missing": missing_codes}
+
+            # 4. '필터 제로' 로직을 통해 is_analysis_target 플래그 업데이트 수행
+            update_count = update_analysis_target_flags(db, valid_codes)
+
+            # 5. 최종적으로 필터 제로를 통과한 종목만 다시 조회하여 XCom에 전달
+            final_target_codes = []
+            for i in range(0, len(valid_codes), batch_size):
+                batch = valid_codes[i:i+batch_size]
+                rows = db.query(Stock.stock_code).filter(Stock.stock_code.in_(batch), Stock.is_analysis_target == True).all()
+                final_target_codes.extend([c for c, in rows])
+
+            logger.info(f"플래그 업데이트: 입력 {len(codes_to_process)}개 → 필터 제로 통과 {len(final_target_codes)}개 (업데이트된 플래그 수: {update_count})")
+            return {"status": "completed", "codes": final_target_codes, "processed_count": len(final_target_codes), "missing": missing_codes, "input_count": len(codes_to_process)}
         finally:
             db.close()
 

@@ -58,7 +58,9 @@ def _analyze_and_store_financials(**kwargs):
     import os
     print(f"DEBUG PRINT: Task is using DART_API_KEY starting with: {os.getenv('DART_API_KEY')[:4] if os.getenv('DART_API_KEY') else 'None'}")
         
-    stock_limit = kwargs.get('params', {}).get('stock_limit', 0)
+    params = kwargs.get('params', {})
+    stock_codes_str = params.get('stock_codes', "")
+    stock_limit = params.get('stock_limit', 0)
 
     db = SessionLocal()
     try:
@@ -71,8 +73,43 @@ def _analyze_and_store_financials(**kwargs):
             print(f"DEBUG PRINT: An exception occurred during DB query: {e}")
         # --- END: 디버깅 코드 v2 ---
 
-        # 1. 활성 종목 리스트 조회
-        active_stocks = get_managed_stocks_from_db(db)
+        # 1. 활성 종목 리스트 조회 / 또는 파라미터로 전달된 특정 종목 사용
+        active_stocks = []
+        if stock_codes_str:
+            # 파라미터로 쉼표로 구분된 종목 코드가 제공된 경우 우선 사용
+            raw_codes = [code.strip() for code in stock_codes_str.split(',')]
+            # 유효한 6자리 숫자 종목코드만 필터링 및 중복 제거(입력 순서 보존)
+            seen = set()
+            valid_codes = []
+            invalid_codes = []
+            for c in raw_codes:
+                if not c:
+                    continue
+                if c.isdigit() and len(c) <= 6:
+                    if c not in seen:
+                        seen.add(c)
+                        valid_codes.append(c)
+                else:
+                    invalid_codes.append(c)
+
+            active_stocks = valid_codes
+            if invalid_codes:
+                print(f"DEBUG WARNING: {len(invalid_codes)}개 유효하지 않은 종목코드 제거: {set(invalid_codes)}")
+            print(f"DEBUG PRINT: `stock_codes` 파라미터로 대상을 한정합니다: {len(active_stocks)}개 종목 - {active_stocks}")
+            # DB에 존재하는 종목만 남기도록 추가 검증
+            if active_stocks:
+                existing = db.query(Stock.stock_code).filter(Stock.stock_code.in_(active_stocks)).all()
+                existing_set = {code for code, in existing}
+                missing = [c for c in active_stocks if c not in existing_set]
+                if missing:
+                    print(f"DEBUG WARNING: {len(missing)}개 종목이 DB에 존재하지 않음: {missing}")
+                # preserve original order
+                active_stocks = [c for c in active_stocks if c in existing_set]
+                if not active_stocks:
+                    print("DEBUG WARNING: 제공된 모든 종목이 DB에 존재하지 않습니다. Task를 종료합니다.")
+                    return None
+        else:
+            active_stocks = get_managed_stocks_from_db(db)
         # --- START: 디버깅 코드 v5 (루프 진입 확인) ---
         print(f"DEBUG PRINT: active_stocks len={len(active_stocks)}; sample={repr(active_stocks[:5])}")
         print("DEBUG PRINT: entering per-stock loop")
@@ -81,7 +118,8 @@ def _analyze_and_store_financials(**kwargs):
         # =================================================================
         # BUG FIX: stock_limit을 DART 맵 로드 전에 적용하도록 위치 수정
         # =================================================================
-        if stock_limit > 0:
+        # stock_codes가 제공되지 않았을 때만 stock_limit 적용
+        if not stock_codes_str and stock_limit > 0:
             active_stocks = active_stocks[:stock_limit]
             print(f"DEBUG PRINT: stock_limit={stock_limit} 적용 후, {len(active_stocks)}개 종목만 처리")
 
@@ -228,6 +266,12 @@ with DAG(
     catchup=False,
     tags=['Analysis', 'Financials', 'Weekly', 'LIVE'],
     params={
+        "stock_codes": Param(
+            type=["null", "string"],
+            default="",
+            title="[테스트용] 특정 종목 대상 실행",
+            description="쉼표(,)로 구분된 종목 코드를 제공하면, 해당 종목들만 대상으로 분석합니다."
+        ),
         "stock_limit": Param(
             type="integer",
             default=0,

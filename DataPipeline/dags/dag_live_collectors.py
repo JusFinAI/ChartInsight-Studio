@@ -21,8 +21,6 @@ DAG_CONFIGS = {
     '5m': {'schedule': '*/5 9-15 * * 1-5', 'tags': ['5min']},
     '30m': {'schedule': '*/30 9-15 * * 1-5', 'tags': ['30min']},
     '1h': {'schedule': '0 9-15 * * 1-5', 'tags': ['1h']},
-    'daily': {'schedule': '0 16 * * 1-5', 'tags': ['daily']},
-    'weekly': {'schedule': '0 17 * * 5', 'tags': ['weekly']}, # 금요일 17시
 }
 
 DEFAULT_ARGS = {
@@ -32,18 +30,18 @@ DEFAULT_ARGS = {
 }
 
 # ---------------------------------------------
-# 캐시된 종목 리스트 조회 함수
+# 캐시된 장중 분봉 데이터 수집 대상 종목 리스트 조회 함수
 # ---------------------------------------------
 
 @lru_cache(maxsize=1)
 def get_live_collector_targets() -> List[str]:
     """
-    캐시된 종목 리스트 반환 (DAG 파싱 시 1회만 DB 조회)
-    
+    캐시된 장중 분봉 데이터 수집 대상 종목 리스트 반환 (DAG 파싱 시 1회만 DB 조회)
+
     live.stocks 테이블에서 is_active=True인 종목 코드를 조회합니다.
     @lru_cache 데코레이터를 통해 DAG 파일 파싱 시 단 한 번만 DB에 접근하며,
     이후 호출은 캐시된 결과를 반환하여 DB 부하를 최소화합니다.
-    
+
     Returns:
         List[str]: 활성 상태인 종목 코드 리스트
     """
@@ -80,7 +78,7 @@ for timeframe, config in DAG_CONFIGS.items():
         catchup=False,
         tags=['production', 'incremental'] + config['tags'],
         max_active_runs=1,  # 동시에 여러 스케줄이 실행되지 않도록 방지
-        description='[LIVE 모드 전용] 실시간 증분 데이터 수집 DAG'
+        description='[LIVE 모드 전용] 장중 분봉 데이터 증분 수집 DAG'
     ) as dag:
         
         # 캐시된 함수 호출로 활성 종목 리스트 조회
@@ -92,8 +90,7 @@ for timeframe, config in DAG_CONFIGS.items():
                 python_callable=_run_live_task,
                 op_kwargs={
                     'stock_code': stock_code,
-                    # 정규화: DAG 레벨에서 'daily'/'weekly'을 collector가 기대하는 'd'/'w'로 변환
-                    'timeframe': ('d' if timeframe == 'daily' else ('w' if timeframe == 'weekly' else timeframe))
+                    'timeframe': timeframe
                 },
                 pool='kiwoom_api_pool'  # API 호출 제한을 위한 Pool 사용 (매우 중요!)
             )

@@ -19,27 +19,12 @@
 
 ### 3. (cursor.ai 개발자 cursor.ai inspector) 자세
 
-#### 3.1 cursor.ai 개발자 자세
-- 감독자가(Gemini CLI로부터 받은 지침을 전달하면) 수동적으로 지침에 따라 코드를 구현하지 말고, 반드시 그 지침이 목표를 달성하기 위한 가장 합리적인 방법을 제시하고 있는지 검토할 것
-- 검토 결과 만일 100%동의할 경우 '왜 동의하는지에 대한 이유와 함께 '동의합니다' 라는 답변을 먼저한 후에 '즉시 구현**에 착수
-- 검토 결과 의문점이나 개선사항이 있으면 코드 구현을 보류하고 적극적으로 질문/제안을 먼저할 것
+#### 3.1 cursor.ai inspector 자세 (보강)
 
-#### 3.2 cursor.ai inspector 자세 (보강)
-- 감독관의 지침을 검토할 때 **기술적 구현 위험**을 집중적으로 분석:
-  - DB 세션 관리 및 트랜잭션 무결성
-  - XCom 사이즈 제한 및 성능 영향  
-  - 데이터 정합성 및 타입 안정성
-  - 로깅 시스템 일관성
-  - 멱등성 보장 (특히 `down -v` 시나리오)
+- 프로젝트 및 각 과제의 목표를 정확하게 인지하고, 감독관의 지침이 늘  100% 옳지 않을 수 있으며 감독관도 실수할 수 있다는 인식,  그리고 cursor.ai 개발자가 구현한 코드도 실수하거나 미흡할 수 있다는 인식을 할 것. 이를 기반으로 감독관으로 부터 전달된 지침과, cursor.ai가 구현한 코드에 대하여 꼼꼼하게 검수하고, 100% 동의가 되는지, 미흡하거나 리스크가 있거나 논리적으로 오류를 낳을 수 있는 부분을 찾아서, 사용자(jscho)에게 이해하기 쉽게 설명,해설을 하는 역할을 할 것.
 
-- **실제 발견된 위험 사례**:
-  - 대량 데이터 XCom 전달 위험 (1,300+ 종목 코드)
-  - DB 세션 deadlock 가능성
-  - API-DB 데이터 매핑 불일치 (`camelCase` vs `snake_case`)
-  - 로깅 시스템 불일치로 인한 가시성 문제
-  - `Base.metadata.create_all()`의 제약조건 한계
 
-- 검토 결과 의문점이나 개선사항이 있으면 코드 구현을 보류하고 적극적으로 질문/제안을 먼저할 것
+
 
 ### 4. 현재까지의 프로젝트 상황 (Current Status)
 
@@ -48,25 +33,26 @@
 - **목표**: TRADING LAB 서비스를 위한 완전 자동화된 데이터 수집/분석 파이프라인 구축
 - **기술 스택**: Python, Apache Airflow, PostgreSQL, Docker, Kiwoom API, DART API
 
-#### 4.2 최근 주요 성과: RS 점수 계산 기능 완료
+#### 4.2 최근 주요 성과: RS 점수 계산 기능 완료 및 프로젝트 현황
 
-**✅ RS_SCORE_IMPLEMENTATION_PLAN 완전 이행**
+**✅ RS_SCORE_IMPLEMENTATION_REPORT 완전 이행**
 - **Phase 1: 데이터 기반 구축 완료**
-  - `sectors` 테이블 및 `stocks.sector_code` 컬럼 추가
+  - DB 스키마 확장 (`sectors` 테이블 + `stocks.sector_code`)
   - `dag_sector_master_update` DAG 구현 (주간 업종 마스터 수집)
-  - Fuzzy matching 기반 종목-업종 매핑 로직 구현
+  - Fuzzy matching 기반 종목-업종 매핑 로직 구현 및 백필
   - 아키텍처 재정의: `dag_initial_loader`(과거 전체) vs `dag_daily_batch`(증분만)
 
-- **Phase 2: RS 계산 로직 구현 및 통합 완료**
+- **Phase 2: RS 계산 로직 구현 및 통합 완료**  
   - `rs_calculator.py` LIVE 모드 Sector RS 계산 활성화
   - 타임존 버그 수정 및 월봉 데이터 정규화
   - 최종 통합 테스트 성공: Market/Sector RS 점수 정상 기록
 
-- **향후 과제**: 
-  - `dag_daily_batch` 증분 업데이트 로직 통합 테스트 (P1)
-  - Airflow DAG 실행 정책 안정화 (P2)
-  - 주간 배치 DAG 통합 테스트 (P3)
-  - SIMULATION 모드 아키텍처 동기화 (P4)
+- **DataPipeline 프로젝트 로드맵 (우선순위 순)**:
+  - **P1**: `dag_daily_batch` 증분 업데이트 로직 통합 테스트
+  - **P2**: Airflow DAG 실행 정책 안정화
+  - **P3**: 주간 배치 DAG 통합 테스트  
+  - **P4**: SIMULATION 모드 아키텍처 동기화
+  - **기타**: `dag_live_collectors.py` 역할 명확화, `dag_financials_update` 통합 테스트
 
 #### 4.3 현재 완성된 주요 컴포넌트
 
@@ -80,6 +66,11 @@
 **⏳ 통합 테스트 대기**:
 - `dag_financials_update`: 주간 재무 분석
 - `dag_live_collectors`: 실시간 증분 수집
+
+**🔧 최근 추가 개발**:
+- 테마 상대강도 분석기 (`thema_rs_analyzer_*.py`)
+- Kiwoom 테마 API 통합 (`ka90001`, `ka90002`, `ka20006`)
+- Plotly Dash 대시보드 통합
 
 ### 5. 개발 환경 정보 (Development Environment)
 
@@ -146,3 +137,11 @@ ChartInsight-Studio/
 - **`dag_initial_loader`**: 시스템 초기화 전담 (과거 데이터 전체 준비)
 - **`dag_daily_batch`**: 순수 증분 업데이트 전담 (매일 새 데이터만 처리)
 - **장점**: 역할 분리로 인한 의존성 혼란 제거
+
+#### 7.4 최신 추가 작업: 테마 상대강도 분석기 개발
+- **테마 데이터 수집**: Kiwoom API `ka90001`(테마그룹), `ka90002`(테마종목) 활용
+- **지수 데이터 통합**: Kiwoom API `ka20006`(업종일봉)을 활용한 기준 데이터 수집
+- **상대강도 계산**: 절대값 분모 사용한 정확한 RS 계산식 구현 ((테마-지수)/|지수|×100)
+- **대시보드 통합**: Plotly Dash 기반 인터랙티브 토네이도 차트 구현
+- **CSV 기반 분석**: `thema_relative_strength_*.csv` 파일 자동 생성 및 시각화
+- **주요 기능**: 시장(KOSPI/KOSDAQ) 선택, 기간(5/10/20/30일) 선택, 실시간 필터링

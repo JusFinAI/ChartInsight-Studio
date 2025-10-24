@@ -68,6 +68,45 @@
 - 설명: 컨테이너 환경변수를 사용하여 안전하게 psql 쿼리를 실행. `bash -c`를 사용하고 `\$POSTGRES_USER`처럼 환경변수 앞에 백슬래시를 추가해야 컨테이너 내부에서 정확히 확장됩니다. simulation/live 스키마 테이블(예: daily_analysis_results) 쿼리 예시.
 - 사용 상황: DAG(load_final_results) 후 데이터 검증 (예: 주식 코드별 RS/재무 등급 확인, SIMULATION 모드 결과).
 
+### 실전 사용 사례: 특정 종목군의 재무분석 결과 조회
+
+- **목적**: `dag_financials_update` 실행 직후 특정 종목들의 분석 결과가 `live.financial_analysis_results`에 정상 저장되었는지 빠르게 검증합니다.
+- **주의점(실수 방지)**: 호스트 셸에서 `"`와 `'$VAR'`가 중첩될 때 확장 문제가 발생하여 `psql`에 잘못된 인자가 전달될 수 있습니다. 컨테이너 내부에서 환경변수를 확장하려면 `bash -c`와 `\$VAR`(백슬래시로 이스케이프) 또는 `-c` 안에서 `"`를 적절히 이스케이프해야 합니다.
+
+- **권장 명령(안전한 형태)**:
+  ```bash
+  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, analysis_date, financial_grade, eps_growth_yoy, eps_annual_growth_avg FROM live.financial_analysis_results WHERE stock_code IN ('005930','000660','373220','005380','035420','207940','005490','051910','105560','096770','033780','247540') ORDER BY stock_code, analysis_date DESC;\""
+  ```
+
+- **활용 케이스**:
+  - 통합 테스트 (예: `stock_codes` 파라미터로 지정한 12개 종목)의 성공 여부를 확인할 때 사용
+  - DAG 실행 후 `analysis_date`별로 결과가 올바르게 UPSERT되었는지 검증
+  - `NaN` 또는 `0.00` 같은 계산 이상치가 있을 경우, 해당 종목을 추적하여 원본 로그(`airflow` 로그)에서 경고/에러 메시지를 확인
+
+- **실행 팁**:
+  - 명령 실행 전 컨테이너가 `running` 상태인지 확인: `docker compose --env-file .env.docker --profile pipeline ps`
+  - 쿼리 결과가 없으면 `SELECT COUNT(*) ...`로 먼저 존재 여부를 체크하여 디버깅 범위를 좁히세요.
+
+## 추가: 오늘 실행(analysis_date 기준) 핵심 컬럼 확인
+
+- **목적**: `dag_daily_batch` 전체 실행 후 오늘(예: `2025-10-24`) 생성된 주요 컬럼(`market_rs_score`, `sector_rs_score`, `financial_grade`, 기술적 컬럼 등)이 정상적으로 채워졌는지 빠르게 확인합니다.
+- **권장 명령(안전한 형태)**:
+  ```bash
+  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c \
+  "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, analysis_date, market_rs_score, sector_rs_score, financial_grade, eps_growth_yoy, eps_annual_growth_avg, sma_20_val, rsi_14_val FROM live.daily_analysis_results WHERE analysis_date = '2025-10-24' AND (financial_grade IS NOT NULL OR market_rs_score IS NOT NULL) ORDER BY stock_code LIMIT 500;\""
+  ```
+
+- **활용 케이스**:
+  - DAG 실행 직후 핵심 분석 컬럼이 제대로 적재되었는지 검증
+  - 기술적 지표(`sma_20_val` 등)가 null인 경우 기술 태스크(`run_technical_analysis`)와 비교·추적
+  - NaN 또는 비정상적 수치(예: `eps_annual_growth_avg = NaN`)가 있는 종목을 식별하여 원인(데이터 부족/계산 오류)을 조사
+
+- **실행 팁**:
+  - `analysis_date` 값은 DAG 실행의 logical_date 또는 params.analysis_date와 일치시켜 사용하세요.
+  - 결과가 많으면 `LIMIT`을 적절히 낮춰 샘플만 확인하고, 필요 시 `WHERE stock_code IN (...)`로 범위를 좁히세요.
+  - 기술적 컬럼과 XCom(예: `run_technical_analysis`)의 값을 비교하려면 XCom을 decode(`convert_from(value,'UTF8')`)하여 매핑을 확인하세요.
+
+
 ## 3.1) Postgres: `live.stocks` 직접 조회 (예제 추가)
 - 목적: DAG 실행 후 `live.stocks` 테이블의 상태(`is_active`, `backfill_needed`, `is_analysis_target`)을 빠르게 확인
 - 권장 실행 위치: `postgres-tradesmart` 컨테이너 내부 (컨테이너 환경변수 사용 권장)
