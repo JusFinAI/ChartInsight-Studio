@@ -20,6 +20,7 @@ from airflow.models import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models.param import Param
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func
 
 from src.database import SessionLocal, FinancialAnalysisResult, Stock
 from src.master_data_manager import get_managed_stocks_from_db
@@ -45,163 +46,117 @@ default_args = {
 
 
 def _analyze_and_store_financials(**kwargs):
-    """재무 분석 및 저장 Task
-    
-    모든 활성 종목에 대해:
-    1. DART API로 재무 데이터 수집
-    2. EPS 계산 및 재무 등급 판정
-    3. financial_analysis_results 테이블에 UPSERT
-    """
-    # =================================================================
-    # DEBUG: 실행 시점의 환경 변수 확인
-    # =================================================================
-    import os
-    print(f"DEBUG PRINT: Task is using DART_API_KEY starting with: {os.getenv('DART_API_KEY')[:4] if os.getenv('DART_API_KEY') else 'None'}")
-        
+    """재무 분석 및 저장 Task"""
     params = kwargs.get('params', {})
-    stock_codes_str = params.get('stock_codes', "")
+    test_stock_codes_param = params.get('test_stock_codes', "")
     stock_limit = params.get('stock_limit', 0)
 
     db = SessionLocal()
     try:
-        # --- START: 디버깅 코드 v2 (print 사용) ---
-        try:
-            print("--- DEBUGGING: INSIDE _analyze_and_store_financials ---")
-            stock_count = db.query(Stock).count()
-            print(f"DEBUG PRINT: live.stocks table count is: {stock_count}")
-        except Exception as e:
-            print(f"DEBUG PRINT: An exception occurred during DB query: {e}")
-        # --- END: 디버깅 코드 v2 ---
-
-        # 1. 활성 종목 리스트 조회 / 또는 파라미터로 전달된 특정 종목 사용
         active_stocks = []
-        if stock_codes_str:
-            # 파라미터로 쉼표로 구분된 종목 코드가 제공된 경우 우선 사용
-            raw_codes = [code.strip() for code in stock_codes_str.split(',')]
-            # 유효한 6자리 숫자 종목코드만 필터링 및 중복 제거(입력 순서 보존)
-            seen = set()
-            valid_codes = []
-            invalid_codes = []
-            for c in raw_codes:
-                if not c:
-                    continue
-                if c.isdigit() and len(c) <= 6:
-                    if c not in seen:
-                        seen.add(c)
-                        valid_codes.append(c)
-                else:
-                    invalid_codes.append(c)
+        if test_stock_codes_param:
+            codes_to_process = []
+            if isinstance(test_stock_codes_param, str):
+                codes_to_process = [c.strip() for c in test_stock_codes_param.split(',') if c.strip()]
+            elif isinstance(test_stock_codes_param, (list, tuple)):
+                codes_to_process = [str(c).strip() for c in test_stock_codes_param if str(c).strip()]
 
-            active_stocks = valid_codes
-            if invalid_codes:
-                print(f"DEBUG WARNING: {len(invalid_codes)}개 유효하지 않은 종목코드 제거: {set(invalid_codes)}")
-            print(f"DEBUG PRINT: `stock_codes` 파라미터로 대상을 한정합니다: {len(active_stocks)}개 종목 - {active_stocks}")
-            # DB에 존재하는 종목만 남기도록 추가 검증
-            if active_stocks:
-                existing = db.query(Stock.stock_code).filter(Stock.stock_code.in_(active_stocks)).all()
+            logger.info(f"test_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
+            if codes_to_process:
+                existing = db.query(Stock.stock_code).filter(Stock.stock_code.in_(codes_to_process)).all()
                 existing_set = {code for code, in existing}
-                missing = [c for c in active_stocks if c not in existing_set]
-                if missing:
-                    print(f"DEBUG WARNING: {len(missing)}개 종목이 DB에 존재하지 않음: {missing}")
-                # preserve original order
-                active_stocks = [c for c in active_stocks if c in existing_set]
-                if not active_stocks:
-                    print("DEBUG WARNING: 제공된 모든 종목이 DB에 존재하지 않습니다. Task를 종료합니다.")
-                    return None
+                active_stocks = [c for c in codes_to_process if c in existing_set]
         else:
             active_stocks = get_managed_stocks_from_db(db)
-        # --- START: 디버깅 코드 v5 (루프 진입 확인) ---
-        print(f"DEBUG PRINT: active_stocks len={len(active_stocks)}; sample={repr(active_stocks[:5])}")
-        print("DEBUG PRINT: entering per-stock loop")
-        # --- END: 디버깅 코드 v5 ---
 
-        # =================================================================
-        # BUG FIX: stock_limit을 DART 맵 로드 전에 적용하도록 위치 수정
-        # =================================================================
-        # stock_codes가 제공되지 않았을 때만 stock_limit 적용
-        if not stock_codes_str and stock_limit > 0:
+        if not active_stocks:
+            logger.warning("처리할 대상 종목이 없습니다. Task를 종료합니다.")
+            return
+
+        if not test_stock_codes_param and stock_limit > 0:
             active_stocks = active_stocks[:stock_limit]
-            print(f"DEBUG PRINT: stock_limit={stock_limit} 적용 후, {len(active_stocks)}개 종목만 처리")
 
-        # DART 고유번호 맵 로드
-        force_update_map = kwargs.get('params', {}).get('force_update_map', False)
-        print(f"DEBUG PRINT: DART 고유번호 맵 로드 시작 (force_update={force_update_map})")
-        corp_map_df = get_corp_code_map(force_update=force_update_map)
-        print(f"DEBUG PRINT: DART 고유번호 맵 로드 완료. {len(corp_map_df)}개 법인 정보 포함.")
-
+        corp_map_df = get_corp_code_map(force_update=params.get('force_update_map', False))
         today = date.today()
-        success_count = 0
-        fail_count = 0
-        skip_count = 0
+        success_count, fail_count, skip_count = 0, 0, 0
 
-        # 각 종목에 대해 순차 처리
         for idx, stock_code in enumerate(active_stocks, 1):
-            # --- START: 디버깅 코드 v5 (루프 내부 확인) ---
-            print(f"DEBUG PRINT: processing {stock_code} (idx={idx})")
-            # --- END: 디버깅 코드 v5 ---
             logger.info(f"[{idx}/{len(active_stocks)}] {stock_code} 재무 분석 시작...")
             try:
-                # 2-1. DART 고유번호 조회 (캐시 우선)
+                last_analysis_date = db.query(func.max(FinancialAnalysisResult.analysis_date)).filter(
+                    FinancialAnalysisResult.stock_code == stock_code
+                ).scalar()
+
                 corp_code = get_corp_code(stock_code, corp_map_df)
-                # DEBUG: 어떤 stock_code가 어떤 corp_code로 매핑되는지 남깁니다.
-                logger.debug(f"get_corp_code mapping: stock_code={stock_code} -> corp_code={corp_code!r}")
                 if not corp_code:
-                    print(f"DEBUG SKIP REASON: [{stock_code}] DART 고유번호 조회 실패, 건너뜀")
                     logger.warning(f"[{stock_code}] DART 고유번호 조회 실패, 건너뜀")
                     skip_count += 1
                     continue
 
-                # 2-2. 재무 데이터 수집
-                financials_raw, shares_raw = fetch_live_financial_data(corp_code)
+                financials_raw, shares_raw = fetch_live_financial_data(corp_code, last_analysis_date)
                 if not financials_raw:
-                    print(f"DEBUG SKIP REASON: [{stock_code}/{corp_code}] 재무 데이터 없음, 건너뜀")
-                    logger.warning(f"[{stock_code}/{corp_code}] 재무 데이터 없음, 건너뜀")
+                    logger.warning(f"[{stock_code}/{corp_code}] 신규 재무 데이터 없음, 건너뜀")
                     skip_count += 1
                     continue
 
-                # 2-3. 데이터 파싱
+                # 기존 로직과 동일한 파싱/계산/저장 처리
                 parser = _FinancialDataParser()
                 financial_df = parser.parse(financials_raw, shares_raw or [])
+                # debug: show parsed DataFrame head and unique year-quarter combos
+                try:
+                    logger.info(f"[{stock_code}] parsed financial_df rows: {len(financial_df)}")
+                    logger.info(f"[{stock_code}] financial_df.head():\n{financial_df.head().to_string()}" )
+                    yq = financial_df[['year', 'quarter']].drop_duplicates().sort_values(['year', 'quarter'])
+                    logger.info(f"[{stock_code}] year-quarter sample:\n{yq.to_string()}" )
+                except Exception as e:
+                    logger.debug(f"[{stock_code}] parsed DataFrame logging failed: {e}")
 
                 if financial_df.empty:
-                    print(f"DEBUG SKIP REASON: [{stock_code}] 파싱 결과 비어있음, 건너뜀")
                     logger.warning(f"[{stock_code}] 파싱 결과 비어있음, 건너뜀")
                     skip_count += 1
                     continue
 
-                # 2-4. 현재 유통주식수 추출
+                # 1단계: DART shares_raw에서 주식총수 추출 (istc_totqy 필드 사용)
                 current_list_count = 0
                 if shares_raw:
                     for item in reversed(shares_raw):
                         if item.get('se') == '보통주':
-                            distb_stock_co = item.get('distb_stock_co', '0')
+                            istc_totqy = item.get('istc_totqy', '0')  # DART API 필드명
                             try:
-                                current_list_count = int(distb_stock_co.replace(',', ''))
-                                break
-                            except ValueError:
+                                current_list_count = int(str(istc_totqy).replace(',', ''))
+                                if current_list_count > 0:
+                                    logger.info(f"[{stock_code}] DART 주식총수 사용: {current_list_count:,}")
+                                    break
+                            except (ValueError, TypeError):
                                 continue
 
+                # 2단계: DART에서 주식총수를 얻지 못한 경우, DB Stock.list_count 사용 (Kiwoom 최신 데이터)
                 if current_list_count <= 0:
-                    print(f"DEBUG SKIP REASON: [{stock_code}] 발행주식수 정보 없음, 건너뜀")
-                    logger.warning(f"[{stock_code}] 발행주식수 정보 없음, 건너뜀")
-                    skip_count += 1
-                    continue
+                    try:
+                        stock_info = db.query(Stock).filter(Stock.stock_code == stock_code).first()
+                        if stock_info and getattr(stock_info, 'list_count', None):
+                            current_list_count = int(stock_info.list_count)
+                            logger.info(f"[{stock_code}] DART 주식총수 없음, DB Stock.list_count 사용: {current_list_count:,}")
+                        else:
+                            logger.warning(f"[{stock_code}] 발행주식수 정보 없음 (DART & DB 모두), 건너뜀")
+                            skip_count += 1
+                            continue
+                    except Exception as e:
+                        logger.warning(f"[{stock_code}] DB 주식수 조회 중 오류: {e}, 건너뜀")
+                        skip_count += 1
+                        continue
 
-                # 2-5. EPS 계산
                 calculator = _EpsCalculator()
                 eps_df = calculator.calculate(financial_df, current_list_count)
 
                 if eps_df is None or eps_df.empty:
-                    print(f"DEBUG SKIP REASON: [{stock_code}] EPS 계산 실패, 건너뜀")
                     logger.warning(f"[{stock_code}] EPS 계산 실패, 건너뜀")
                     skip_count += 1
                     continue
 
-                # 2-6. 재무 등급 판정
                 analyzer = _FinancialGradeAnalyzer()
                 result = analyzer.analyze(eps_df)
 
-                # 2-7. DB에 UPSERT
                 stmt = insert(FinancialAnalysisResult).values(
                     stock_code=stock_code,
                     analysis_date=today,
@@ -223,28 +178,17 @@ def _analyze_and_store_financials(**kwargs):
                 success_count += 1
 
                 logger.info(
-                    f"[{stock_code}] 재무 분석 완료 - "
-                    f"등급: {result.get('financial_grade')}, "
-                    f"YoY: {result.get('eps_growth_yoy')}%, "
-                    f"연평균: {result.get('eps_annual_growth_avg')}%"
+                    f"[{stock_code}] 재무 분석 완료 - 등급: {result.get('financial_grade')}, "
+                    f"YoY: {result.get('eps_growth_yoy')}%, 연평균: {result.get('eps_annual_growth_avg')}%"
                 )
-
-                # 2-8. DART API Rate Limiting
-                time.sleep(0.5)
 
             except Exception as e:
                 logger.error(f"[{stock_code}] 재무 분석 중 오류 발생: {e}", exc_info=True)
                 fail_count += 1
                 continue
 
-        # 3. 모든 성공 건 커밋
         db.commit()
-
-        print(
-            f"DEBUG PRINT: 재무 분석 완료 - "
-            f"성공: {success_count}, 실패: {fail_count}, 건너뜀: {skip_count}, "
-            f"총: {len(active_stocks)}"
-        )
+        logger.info(f"재무 분석 완료 - 성공: {success_count}, 실패: {fail_count}, 건너뜀: {skip_count}")
 
     except Exception as e:
         db.rollback()
@@ -266,7 +210,7 @@ with DAG(
     catchup=False,
     tags=['Analysis', 'Financials', 'Weekly', 'LIVE'],
     params={
-        "stock_codes": Param(
+        "test_stock_codes": Param(
             type=["null", "string"],
             default="",
             title="[테스트용] 특정 종목 대상 실행",

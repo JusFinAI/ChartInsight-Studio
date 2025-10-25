@@ -100,9 +100,14 @@ def _run_initial_load_task(db_session=None, **kwargs):
         # 1. 대상 종목 선정 로직
         target_stocks = []
         mode_description = ""
-        if config.get('stock_codes'):
+        test_stock_codes_param = config.get('test_stock_codes')
+
+        if test_stock_codes_param:
             mode_description = "🎯 '특정 종목' 모드"
-            target_stocks = [code.strip() for code in config['stock_codes'].split(',') if code.strip()]
+            if isinstance(test_stock_codes_param, str):
+                target_stocks = [code.strip() for code in test_stock_codes_param.split(',') if code.strip()]
+            elif isinstance(test_stock_codes_param, (list, tuple)):
+                target_stocks = [str(code).strip() for code in test_stock_codes_param if str(code).strip()]
             print(f"수동 모드로 특정 종목에 대해 실행합니다: {target_stocks}")
         else:
             rows = db_session.query(Stock.stock_code).filter(Stock.is_active == True, Stock.backfill_needed == True).all()
@@ -324,10 +329,10 @@ with DAG(
     tags=['Utility', 'Backfill', 'Manual'],
     description='[유틸리티] 과거 데이터 대량 적재 (초기 구축 및 데이터 백필용)',
     params={
-        "stock_codes": Param(
+        "test_stock_codes": Param(
             type=["null", "string"],
             default=None,
-            title="🎯 특정 종목 대상 실행",
+            title="[테스트용] 특정 종목 대상 실행",
             description="종목코드를 입력하세요. 여러 종목은 쉼표(,)로 구분합니다. (예: 005930,000660)"
         ),
         "stock_limit": Param(
@@ -362,8 +367,8 @@ with DAG(
     이 DAG는 시스템을 최초로 구축하거나, 특정 종목의 과거 데이터를 보강(백필)해야 할 때 **수동으로 실행**하는 관리용 도구입니다.
 
     #### 실행 모드
-    - **자동 모드 (기본)**: `stock_codes` 파라미터를 비워두고 실행하면, DB에서 `backfill_needed=True`로 표시된 모든 종목을 자동으로 찾아 과거 데이터를 적재합니다.
-    - **수동 모드**: `stock_codes`에 종목코드를 입력하여 특정 종목의 과거 데이터만 선별적으로 적재합니다. 신규 관심 종목 추가나 데이터 유실 시 복구 용도로 사용합니다.
+    - **자동 모드 (기본)**: `test_stock_codes` 파라미터를 비워두고 실행하면, DB에서 `backfill_needed=True`로 표시된 모든 종목을 자동으로 찾아 과거 데이터를 적재합니다.
+    - **수동 모드**: `test_stock_codes`에 종목코드를 입력하여 특정 종목의 과거 데이터만 선별적으로 적재합니다. 신규 관심 종목 추가나 데이터 유실 시 복구 용도로 사용합니다.
 
     **주의**: 이 DAG는 대량의 API 호출을 유발할 수 있으므로, 신중하게 사용해야 합니다.
     """

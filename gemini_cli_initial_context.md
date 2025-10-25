@@ -1,4 +1,4 @@
-## Gemini CLI 프로젝트 컨텍스트 및 초기 프롬프트 (v2)
+## Gemini CLI 프로젝트 컨텍스트 및 초기 프롬프트 (v3)
 
 ### 1. 너의 역할 (Your Persona)
 
@@ -34,14 +34,28 @@
     -   `fuzzywuzzy` 및 수동 매핑을 포함한 다단계 업종 코드 매핑 로직(`backfill_sector_codes`) 구현으로, 분석 대상 종목의 매핑되지 않은 `sector_code`를 0으로 만듦.
     -   `init_db()` 함수에 멱등성 있는 `UNIQUE` 제약조건 추가 로직을 구현하여, `daily_analysis_results` 테이블의 데이터 무결성 보장.
 
+4.  **게이트키퍼 아키텍처 완전 구현**
+    -   `update_analysis_target_flags_task`를 단일 진실 공급원으로 지정하여 테스트 유연성 극대화
+    -   `target_stock_codes` 파라미터 지원으로 특정 종목 지정 테스트 가능
+    -   모든 분석 Task가 XCom을 통해 일관된 대상 종목 처리 보장
+    -   데이터 일관성과 운영 효율성 크게 향상
+
+5.  **테마 분석 기능 탐색**
+    -   키움 API 테마 분석 기능 탐색: `test_ka90001_테마그룹별요청.py`, `test_ka90002_테마구성종목요청.py` 구현
+    -   테마 상대강도 분석기 개발: `thema_rs_analyzer.py`, `thema_rs_analyzer_v2.py`, `thema_rs_analyzer_gemini.py`
+    -   대시보드 시각화: Plotly Dash 기반 인터랙티브 테마 RS 대시보드 구현
+
 #### 3.2 기술적 성과
 -   **Custom Docker Image 도입**: `DataPipeline/Dockerfile`을 통해 `fuzzywuzzy` 등 외부 라이브러리를 포함한 자체 Airflow 이미지를 구축하여, 재현 가능하고 일관된 개발 환경 확보.
 -   **API 서비스 계층 분리**: `kiwoom_api/services/master.py`와 같이, API 호출 로직을 DAG과 분리하여 코드의 재사용성과 유지보수성 향상.
 -   **Timezone 처리 안정화**: `data_collector.py`에서 발생했던 Timezone 비교 버그를 수정하여 증분 수집 로직의 안정성 확보.
+-   **게이트키퍼 패턴 도입**: 단일 진실 공급원 아키텍처로 테스트 정확성과 운영 효율성 극대화
 
 #### 3.3 현재 상태 (요약)
 -   **RS 점수 계산 기능 구현 및 통합 테스트가 성공적으로 완료되었습니다.**
+-   **게이트키퍼 아키텍처 완전 구현으로 테스트 유연성 크게 향상되었습니다.**
 -   데이터 파이프라인의 핵심 아키텍처가 안정화되었으며, 데이터의 흐름과 역할 분담이 명확해졌습니다.
+-   테마 분석 기능 탐색을 통해 추가 분석 가능성 확인되었습니다.
 -   이제 RS 점수 외의 다른 분석 기능을 추가하거나, 시스템의 안정성을 검증하는 다음 단계로 나아갈 준비가 되었습니다.
 
 ---
@@ -54,69 +68,5 @@ RS 점수 기능 구현 과정에서 식별된 추가 과제들이며, 아래 �
     -   **목표**: `dag_daily_batch`를 여러 날짜에 걸쳐 연속으로 실행하는 상황을 시뮬레이션하여, `collect_and_store_candles` 함수가 마지막 데이터 이후의 '증분'만 올바르게 가져오는지 검증.
 
 -   **P2 (High): Airflow DAG 실행 정책 안정화**
-    -   **목표**: DAG 활성화(unpause) 시 의도치 않은 과거 DAG가 실행되는 문제를 해결하고, `catchup` 파라미터 등을 최적화하여 DAG가 예측 가능하게 동작하도록 안정화.
-
--   **P3 (Medium): 주간 배치 DAG 통합 테스트**
-    -   **목표**: `dag_financials_update`와 `dag_sector_master_update`를 실행하고, 그 결과물을 `dag_daily_batch`가 정상적으로 소비하는지 전체 데이터 흐름을 검증.
-
--   **P4 (Low): `SIMULATION` 모드 아키텍처 동기화**
-    -   **목표**: `LIVE` 모드에 적용된 모든 아키텍처 개선사항(`rs_calculator` 로직, 데이터 흐름 등)을 `SIMULATION` 모드에도 동일하게 반영하여, 두 모드 간의 동작 일관성을 확보.
-
----
-
-### 5. 주요 파일 구조 (Key File Structure)
-
-```
-ChartInsight-Studio/
-├── DataPipeline/
-│   ├── dags/
-│   │   ├── dag_initial_loader.py      # ✅ 완성 (강화됨)
-│   │   ├── dag_daily_batch.py         # ✅ 완성 (RS 계산 통합)
-│   │   ├── dag_sector_master_update.py # ✅ 완성 (신규)
-│   │   ├── dag_financials_update.py   # ⏳ 통합 테스트 대기
-│   │   └── dag_live_collectors.py     # ⏳ 통합 테스트 대기
-│   ├── src/
-│   │   ├── analysis/
-│   │   │   ├── financial_engine.py    # ✅ 완성
-│   │   │   ├── financial_analyzer.py  # ✅ 완성
-│   │   │   └── rs_calculator.py       # ✅ 완성 (LIVE 모드)
-│   │   ├── kiwoom_api/
-│   │   │   ├── stock_info.py          # ✅ 완성
-│   │   │   └── services/master.py     # ✅ 완성 (신규)
-│   │   ├── utils/
-│   │   │   ├── filters.py             # ✅ 완성
-│   │   │   └── sector_mapper.py       # ✅ 완성 (신규)
-│   │   ├── data_collector.py          # ✅ 완성 (타임존 버그 수정)
-│   │   ├── master_data_manager.py     # ✅ 완성 (백필 로직 통합)
-│   │   └── database.py                # ✅ 완성 (멱등성 강화)
-│   └── Dockerfile
-└── .env.docker
-└── .env.docker.local
-└── docker-compose.yaml
-
-
-### 6. 새로운 대화 세션을 위한 재개 템플릿
-
-```
-[세션 헤더]
-- 세션 시작일: 2025-10-22
-- 요약: RS 점수 계산 기능의 아키텍처 수립, 구현, 통합 테스트를 성공적으로 완료함. 이제 다음 우선순위 과제를 진행할 준비가 되었음.
-
-[핵심 컨텍스트 요약(한 문단)]
-- 우리는 `dag_initial_loader`(과거 전체)와 `dag_daily_batch`(매일 증분)의 역할을 명확히 분리하는 최종 아키텍처를 확립했으며, 이를 바탕으로 Market/Sector RS 점수 계산 기능의 구현 및 검증을 모두 마쳤습니다. 이 과정에서 DB 스키마 확장, 업종 코드 자동 매핑, Timezone 버그 수정, Custom Docker 이미지 도입 등 수많은 기술적 문제를 해결했습니다. 이제 다음으로, 정의된 '향후 과제' 목록에서 가장 우선순위가 높은 P1 과제를 수행하여 파이프라인의 증분 업데이트 기능의 안정성을 검증해야 합니다.
-
-[현재 액션 아이템]
-1. (P1) `dag_daily_batch` 증분 업데이트 로직 통합 테스트
-2. (P2) Airflow DAG 실행 정책 안정화
-3. (P3) 주간 배치 DAG 통합 테스트
-4. (P4) `SIMULATION` 모드 아키텍처 동기화
-
-[참고문서]
-- `RS_SCORE_IMPLEMENTATION_REPORT.md` (이번 세션의 전체 작업 보고서)
-- `DataPipeline/dags/dag_daily_batch.py` (최종 수정된 일일 배치 DAG)
-- `DataPipeline/dags/dag_initial_loader.py` (최종 수정된 초기 적재 DAG)
-
-[요청사항]
-- '향후 과제' 목록에서 가장 우선순위가 높은 **P1: `dag_daily_batch` 증분 업데이트 로직 통합 테스트**를 수행하기 위한 상세 계획 및 지침을 제공해 주십시오.
-```
+    -   **목표**: DAG 활성화(unpause) 시 의도치 않은 과거 DAG가 실행되는 문제를 해결하고, `catchup` 파라미터 등을 최極限に達したため、これ以上の応答を生成できません。チャットを続けるには、新しい会話を開始してください。
 

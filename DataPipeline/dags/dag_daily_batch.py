@@ -422,11 +422,11 @@ with DAG(
             enum=["LIVE", "SIMULATION"],
         ),
         # 테스트용: 특정 종목만 빠르게 실행할 수 있는 파라미터
-        "target_stock_codes": Param(
-            type=["null", "array"],
-            default=[],
+        "test_stock_codes": Param(
+            type=["null", "string"],
+            default="",
             title="[테스트용] 특정 종목 대상 실행",
-            description="여기에 종목 코드 리스트를 제공하면, 해당 종목들만 대상으로 분석을 실행합니다. (예: [\"005930\", \"000660\"])"
+            description="쉼표로 구분된 종목 코드를 입력하세요. (예: 005930,000660)"
         ),
         # (Deprecated) 기존의 run_for_all_filtered_stocks, sample_stock_codes 파라미터 제거됨
     },
@@ -478,21 +478,21 @@ with DAG(
         logger = logging.getLogger(__name__)
         ti = kwargs['ti']
 
-        # 1. 파라미터 우선 처리: UI로 전달된 target_stock_codes가 있으면 우선 사용
+        # 1. 파라미터 우선 처리: UI로 전달된 test_stock_codes가 있으면 우선 사용
         params = kwargs.get('params', {})
-        target_stock_codes_param = params.get('target_stock_codes') or params.get('target_stock_codes', [])
+        test_stock_codes_param = params.get('test_stock_codes') or params.get('test_stock_codes', "")
 
         db = SessionLocal()
         try:
             codes_to_process = []
-            if target_stock_codes_param:
+            if test_stock_codes_param:
                 # 지원 입력 형태: 배열 또는 쉼표로 구분된 문자열
-                if isinstance(target_stock_codes_param, str):
-                    codes_to_process = [c.strip() for c in target_stock_codes_param.split(',') if c.strip()]
-                elif isinstance(target_stock_codes_param, (list, tuple)):
-                    codes_to_process = [str(c).strip() for c in target_stock_codes_param if str(c).strip()]
+                if isinstance(test_stock_codes_param, str):
+                    codes_to_process = [c.strip() for c in test_stock_codes_param.split(',') if c.strip()]
+                elif isinstance(test_stock_codes_param, (list, tuple)):
+                    codes_to_process = [str(c).strip() for c in test_stock_codes_param if str(c).strip()]
 
-                logger.info(f"target_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
+                logger.info(f"test_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
             else:
                 # 2. 파라미터가 없으면 기존 흐름: sync_task의 XCom 결과 사용
                 all_active_codes = ti.xcom_pull(task_ids='sync_stock_master')
