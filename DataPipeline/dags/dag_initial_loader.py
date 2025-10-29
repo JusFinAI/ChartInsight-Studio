@@ -22,23 +22,24 @@ Task 구조:
 
 import time
 import pendulum
+import json
+import logging
+from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
+
 from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
 from airflow.models.param import Param
+from airflow.models import Variable
 
 # --- 공통 모듈 및 변수 로드 ---
-from src.data_collector import load_initial_history
-from src.database import SessionLocal, Stock
-from src.master_data_manager import sync_stock_master_to_db
-from src.utils.common_helpers import get_target_stocks, get_all_filtered_stocks
-import logging
+from src.data_collector import load_initial_history, create_simulation_snapshot
+from src.database import SessionLocal, Stock, Sector
+from src.kiwoom_api.services.master import get_sector_list
+from sqlalchemy.dialects.postgresql import insert
 
-DEFAULT_ARGS = {
-    'owner': 'tradesmart_ai',
-    'retries': 1,  # 초기 적재는 재시도 최소화
-    'retry_delay': pendulum.duration(minutes=5),  # 재시도 간 5분 대기
-}
+            
 
 # 지원하는 타임프레임 목록
 TARGET_TIMEFRAMES = ['5m', '30m', '1h', 'd', 'w', 'mon']
@@ -53,6 +54,12 @@ TIMEFRAME_PERIOD_MAP = {
     'mon': '10y', # 월봉은 10년 (RS 계산에 필수)
 }
 # ---------------------------------------------
+
+DEFAULT_ARGS = {
+    'owner': 'tradesmart_ai',
+    'retries': 1,  # 초기 적재는 재시도 최소화
+    'retry_delay': pendulum.duration(minutes=5),  # 재시도 간 5분 대기
+}
 
 # dags/dag_initial_loader.py
 
@@ -79,177 +86,263 @@ def _run_stock_info_load_task(**kwargs):
         raise
     finally:
         db_session.close()
-        
+
+
+def _calculate_default_target_datetime() -> str:
+    """
+    LIVE 모드의 target_datetime 기본값을 동적으로 계산합니다.
+    - 장 마감 후: 오늘 날짜의 16:00
+    - 장 중/전: 직전 거래일의 16:00
+    """
+    kst = ZoneInfo('Asia/Seoul')
+    now_kst = datetime.now(kst)
+    trading_end_time = dt_time(15, 30)
+
+    target_date = now_kst.date()
+
+    # 장 마감 시간 이전이면, 날짜를 하루 전으로 설정
+    if now_kst.time() < trading_end_time:
+        target_date -= timedelta(days=1)
+
+    # 주말 처리: 토요일(5)이면 금요일로, 일요일(6)이면 금요일로 이동
+    if target_date.weekday() == 5:  # Saturday
+        target_date -= timedelta(days=1)
+    elif target_date.weekday() == 6:  # Sunday
+        target_date -= timedelta(days=2)
+
+    # 최종 기준 시점을 오후 4시로 설정
+    default_dt = datetime.combine(target_date, dt_time(16, 0), tzinfo=kst)
+    return default_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
 def _run_initial_load_task(db_session=None, **kwargs):
     """
-    Airflow UI의 "Trigger DAG with config"를 통해 전달된 파라미터를 읽어,
-    대상을 선정한 후 load_initial_history 함수를 호출하는 어댑터 함수.
+    파라미터를 읽어 LIVE 모드에서는 초기 적재를,
+    SIMULATION 모드에서는 DB 스냅샷 생성을 수행합니다.
     """
-    dag_run = kwargs.get('dag_run')
-    config = dag_run.conf if dag_run and dag_run.conf else {}
-    print(f"📋 입력받은 설정: {config}")
+    config = kwargs.get('dag_run').conf if kwargs.get('dag_run') else {}
+    execution_mode = config.get('execution_mode', 'LIVE')
+    logger = logging.getLogger(__name__)
+    logger.info(f"🎯 _run_initial_load_task 시작: mode={execution_mode}")
+
+    # 1. 'target_datetime' 결정 (지능형 기본값 로직 추가)
+    target_datetime_str = config.get('target_datetime')
+    if not target_datetime_str and execution_mode == 'LIVE':
+        target_datetime_str = _calculate_default_target_datetime()
+        logger.info(f"LIVE 모드에서 기준 시점이 지정되지 않아, '{target_datetime_str}'로 자동 설정합니다.")
 
     # --- DB Session Management ---
     session_owner = False
-    if db_session is None:
-        db_session = SessionLocal()
-        session_owner = True
-    # -----------------------------
+    if execution_mode != 'SIMULATION':
+        if db_session is None:
+            db_session = SessionLocal()
+            session_owner = True
 
     try:
-        # 1. 대상 종목 선정 로직
-        target_stocks = []
-        mode_description = ""
-        test_stock_codes_param = config.get('test_stock_codes')
+        if execution_mode == 'SIMULATION':
+            # --- SIMULATION 모드: 데이터 스냅샷 준비 ---
 
-        if test_stock_codes_param:
-            mode_description = "🎯 '특정 종목' 모드"
-            if isinstance(test_stock_codes_param, str):
-                target_stocks = [code.strip() for code in test_stock_codes_param.split(',') if code.strip()]
-            elif isinstance(test_stock_codes_param, (list, tuple)):
-                target_stocks = [str(code).strip() for code in test_stock_codes_param if str(code).strip()]
-            print(f"수동 모드로 특정 종목에 대해 실행합니다: {target_stocks}")
-        else:
-            rows = db_session.query(Stock.stock_code).filter(Stock.is_active == True, Stock.backfill_needed == True).all()
-            target_stocks = [r.stock_code for r in rows]
-            mode_description = "🔥 '자동 모드(백필 대상 조회)'"
-            print(f"자동 모드로 DB에서 백필 대상 {len(target_stocks)}건을 조회하여 실행합니다.")
+            test_stock_codes_str = config.get('test_stock_codes', '')
+            target_datetime_str = config.get('target_datetime')
 
-        if not target_stocks:
-            print("처리할 대상 종목이 없습니다. 작업을 종료합니다.")
+            if not test_stock_codes_str or not target_datetime_str:
+                raise AirflowException(
+                    "SIMULATION 모드에서는 'test_stock_codes'와 'target_datetime' 파라미터가 반드시 필요합니다."
+                )
+
+            user_stock_codes = [code.strip() for code in test_stock_codes_str.split(',') if code.strip()]
+
+            # 1. [신규] RS 계산에 필요한 모든 코드를 자동으로 추가합니다.
+            db = SessionLocal()
+            try:
+                sector_codes = {s.sector_code for s in db.query(Sector.sector_code).all()}
+                market_index_codes = {'001', '101'}
+                all_necessary_codes = list(set(user_stock_codes) | sector_codes | market_index_codes)
+                logger.info(f"RS 계산을 위해 시장/업종 지수 코드를 자동 추가합니다. 총 {len(all_necessary_codes)}개 코드 처리.")
+            finally:
+                db.close()
+
+            # 2. 데이터 스냅샷 생성 함수 호출 (통합된 코드 리스트 사용)
+            snapshot_result = create_simulation_snapshot(
+                stock_codes=all_necessary_codes,
+                execution_time=target_datetime_str
+            )
+
+            if snapshot_result.get('status') != 'completed':
+                raise AirflowException(f"❌ SIMULATION 스냅샷 생성 실패: {snapshot_result.get('error')}")
+
+            # 3. Airflow Variable 저장 (사용자 입력 종목 기준)
+            snapshot_meta = {
+                "snapshot_time": target_datetime_str,
+                "stock_codes": user_stock_codes, # Variable에는 사용자가 명시한 종목만 기록
+                "timeframes": snapshot_result["timeframes"],
+                "prepared_at": datetime.now().isoformat(),
+                "total_rows": snapshot_result["total_rows"],
+                "status": snapshot_result["status"]
+            }
+            Variable.set("simulation_snapshot_info", json.dumps(snapshot_meta))
+            logger.info(f"✅ SIMULATION 스냅샷 생성 완료: {target_datetime_str} ({snapshot_result['total_rows']}행)")
             return
 
-        # 2. 공통 파라미터 추출
-        base_date = config.get('base_date')
-        execution_mode = config.get('execution_mode', 'LIVE')
-        timeframes_to_process = config.get('timeframes', ['5m', '30m', '1h', 'd', 'w', 'mon'])
-
-        # 3. 작업 실행 로직
-        print(f'\n{'='*60}')
-        print(f'🚀 {mode_description}으로 초기 적재 작업을 시작합니다.')
-        print(f'📊 대상 종목 수: {len(target_stocks)}개')
-        print(f'⏰ 타임프레임: {timeframes_to_process}')
-        print(f'📅 기준일: {base_date or '현재 날짜'}')
-        print(f'📆 기간: 타임프레임별 최적화된 기간 사용')
-        print(f'🔧 실행 모드: {execution_mode}')
-        print(f'{'='*60}\n')
-
-        success_count = 0
-        fail_count = 0
-        total_tasks = len(target_stocks) * len(timeframes_to_process)
-        current_task = 0
-
-        # --- [신규] 1. 업종 마스터 데이터 준비 ---
-        from src.kiwoom_api.services.master import get_sector_list
-        from sqlalchemy.dialects.postgresql import insert
-        from src.database import Sector, Stock
-
-        logger = logging.getLogger(__name__)
-        logger.info("업종 마스터 데이터 준비를 시작합니다.")
-        all_sectors = get_sector_list()
-        if all_sectors:
-            stmt = insert(Sector).values(all_sectors)
-            update_stmt = stmt.on_conflict_do_update(
-                index_elements=['sector_code'],
-                set_={'sector_name': stmt.excluded.sector_name, 'market_name': stmt.excluded.market_name}
-            )
-            db_session.execute(update_stmt)
-            db_session.commit()
-            logger.info(f"{len(all_sectors)}개 업종 마스터 데이터 준비 완료.")
         else:
-            logger.warning("API로부터 업종 데이터를 가져오지 못했습니다.")
+            # --- LIVE 모드: 기존 초기 적재 로직 (수정) ---
+            logger.info("Starting LIVE mode initial loading process.")
 
-        # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 일/주/월봉 전체 적재 ---
-        logger.info("기준 데이터(지수, 업종)의 전체 과거 일/주/월봉 적재를 시작합니다.")
-        index_codes = ['001', '101']
-        sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
-        baseline_codes = index_codes + sector_codes
-
-        # 기준 데이터 레코드가 stocks 테이블에 존재하도록 보장
-        baseline_stock_info = [{'stock_code': code, 'stock_name': 'BASELINE_DATA', 'is_active': True, 'backfill_needed': False} for code in baseline_codes]
-        stmt = insert(Stock).values(baseline_stock_info)
-        db_session.execute(stmt.on_conflict_do_nothing(index_elements=['stock_code']))
-        db_session.commit()
-
-        # 처리할 타임프레임 목록 정의
-        baseline_timeframes = ['d', 'w', 'mon']
-
-        # [개선] 에러 카운팅을 통한 안정성 확보
-        error_count = 0
-        total_baseline_tasks = len(baseline_codes) * len(baseline_timeframes)
-
-        for code in baseline_codes:
-            for timeframe in baseline_timeframes:
+            # 'target_datetime'을 'base_date' (YYYYMMDD) 형식으로 변환
+            base_date = None
+            if target_datetime_str:
                 try:
-                    # [개선] TIMEFRAME_PERIOD_MAP 변수의 존재 여부를 확인하는 방어적 코드
-                    if 'TIMEFRAME_PERIOD_MAP' in globals():
-                        period = TIMEFRAME_PERIOD_MAP.get(timeframe, '10y')
-                    else:
-                        # TIMEFRAME_PERIOD_MAP이 없는 경우를 대비한 안전장치
-                        period = '10y' if timeframe == 'mon' else '5y'
+                    base_date = datetime.strptime(target_datetime_str, '%Y-%m-%d %H:%M:%S').strftime('%Y%m%d')
+                except ValueError:
+                    raise AirflowException(f"target_datetime 형식이 잘못되었습니다. 'YYYY-MM-DD HH:MM:SS' 형식을 사용해주세요.")
 
-                    load_initial_history(
-                        stock_code=code,
-                        timeframe=timeframe,
-                        period=period,
-                        execution_mode=execution_mode
-                    )
-                    # [개선] API Rate Limiting 강화
-                    time.sleep(0.5)
-                except Exception as e:
-                    error_count += 1
-                    # [개선] 에러 로그에 timeframe 정보 추가
-                    logger.error(f"기준 데이터 적재 중 오류: {code} ({timeframe}) - {e}", exc_info=True)
-                    continue
+            # --- LIVE 모드: 기존 초기 적재 로직 (계속) ---
+            # 1. 대상 종목 선정 로직
+            target_stocks = []
+            mode_description = ""
+            test_stock_codes_param = config.get('test_stock_codes')
 
-        # [개선] 에러율이 30%를 초과하면 DAG 실패 처리
-        if total_baseline_tasks > 0 and (error_count / total_baseline_tasks) > 0.3:
-            raise AirflowException(f"너무 많은 기준 데이터 적재에 실패했습니다. (총 {total_baseline_tasks}개 중 {error_count}개 실패)")
+            if test_stock_codes_param:
+                mode_description = "🎯 '특정 종목' 모드"
+                if isinstance(test_stock_codes_param, str):
+                    target_stocks = [code.strip() for code in test_stock_codes_param.split(',') if code.strip()]
+                elif isinstance(test_stock_codes_param, (list, tuple)):
+                    target_stocks = [str(code).strip() for code in test_stock_codes_param if str(code).strip()]
+                print(f"수동 모드로 특정 종목에 대해 실행합니다: {target_stocks}")
+            else:
+                rows = db_session.query(Stock.stock_code).filter(Stock.is_active == True, Stock.backfill_needed == True).all()
+                target_stocks = [r.stock_code for r in rows]
+                mode_description = "🔥 '자동 모드(백필 대상 조회)'"
+                print(f"자동 모드로 DB에서 백필 대상 {len(target_stocks)}건을 조회하여 실행합니다.")
 
-        logger.info("기준 데이터 과거 일/주/월봉 적재 완료.")
+            if not target_stocks:
+                print("처리할 대상 종목이 없습니다. 작업을 종료합니다.")
+                return
 
-        for stock_code in target_stocks:
-            all_success = True
-            for timeframe in timeframes_to_process:
-                current_task += 1
-                # 타임프레임별 최적화된 기간 조회
-                period_for_timeframe = TIMEFRAME_PERIOD_MAP.get(timeframe, '1y')
-                print(f"\n[{current_task}/{total_tasks}] 처리 중: {stock_code} - {timeframe} (기간: {period_for_timeframe})")
-                try:
-                    success = load_initial_history(
-                        stock_code=stock_code, timeframe=timeframe, base_date=base_date, period=period_for_timeframe, execution_mode=execution_mode
-                    )
-                    if success:
-                        success_count += 1
-                        print(f"✅ 성공: {stock_code} - {timeframe}")
-                    else:
+            # 2. 공통 파라미터 추출
+            timeframes_to_process = config.get('timeframes', ['5m', '30m', '1h', 'd', 'w', 'mon'])
+
+            # 3. 작업 실행 로직
+            print(f'\n{'='*60}')
+            print(f'🚀 {mode_description}으로 초기 적재 작업을 시작합니다.')
+            print(f'📊 대상 종목 수: {len(target_stocks)}개')
+            print(f'⏰ 타임프레임: {timeframes_to_process}')
+            print(f'📅 기준 시점: {target_datetime_str or '자동 계산됨'}')
+            print(f'📆 기간: 타임프레임별 최적화된 기간 사용')
+            print(f'🔧 실행 모드: {execution_mode}')
+            print(f'{'='*60}\n')
+
+            success_count = 0
+            fail_count = 0
+            total_tasks = len(target_stocks) * len(timeframes_to_process)
+            current_task = 0
+
+            logger = logging.getLogger(__name__)
+            logger.info("업종 마스터 데이터 준비를 시작합니다.")
+            all_sectors = get_sector_list()
+            if all_sectors:
+                stmt = insert(Sector).values(all_sectors)
+                update_stmt = stmt.on_conflict_do_update(
+                    index_elements=['sector_code'],
+                    set_={'sector_name': stmt.excluded.sector_name, 'market_name': stmt.excluded.market_name}
+                )
+                db_session.execute(update_stmt)
+                db_session.commit()
+                logger.info(f"{len(all_sectors)}개 업종 마스터 데이터 준비 완료.")
+            else:
+                logger.warning("API로부터 업종 데이터를 가져오지 못했습니다.")
+
+            # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 일/주/월봉 전체 적재 ---
+            logger.info("기준 데이터(지수, 업종)의 전체 과거 일/주/월봉 적재를 시작합니다.")
+            index_codes = ['001', '101']
+            sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
+            baseline_codes = index_codes + sector_codes
+
+            # 기준 데이터 레코드가 stocks 테이블에 존재하도록 보장
+            baseline_stock_info = [{'stock_code': code, 'stock_name': 'BASELINE_DATA', 'is_active': True, 'backfill_needed': False} for code in baseline_codes]
+            stmt = insert(Stock).values(baseline_stock_info)
+            db_session.execute(stmt.on_conflict_do_nothing(index_elements=['stock_code']))
+            db_session.commit()
+
+            # 처리할 타임프레임 목록 정의
+            baseline_timeframes = ['d', 'w', 'mon']
+
+            # [개선] 에러 카운팅을 통한 안정성 확보
+            error_count = 0
+            total_baseline_tasks = len(baseline_codes) * len(baseline_timeframes)
+
+            for code in baseline_codes:
+                for timeframe in baseline_timeframes:
+                    try:
+                        # [개선] TIMEFRAME_PERIOD_MAP 변수의 존재 여부를 확인하는 방어적 코드
+                        if 'TIMEFRAME_PERIOD_MAP' in globals():
+                            period = TIMEFRAME_PERIOD_MAP.get(timeframe, '10y')
+                        else:
+                            # TIMEFRAME_PERIOD_MAP이 없는 경우를 대비한 안전장치
+                            period = '10y' if timeframe == 'mon' else '5y'
+
+                        load_initial_history(
+                            stock_code=code,
+                            timeframe=timeframe,
+                            period=period,
+                            execution_mode=execution_mode
+                        )
+                        # [개선] API Rate Limiting 강화
+                        time.sleep(0.5)
+                    except Exception as e:
+                        error_count += 1
+                        # [개선] 에러 로그에 timeframe 정보 추가
+                        logger.error(f"기준 데이터 적재 중 오류: {code} ({timeframe}) - {e}", exc_info=True)
+                        continue
+
+            # [개선] 에러율이 30%를 초과하면 DAG 실패 처리
+            if total_baseline_tasks > 0 and (error_count / total_baseline_tasks) > 0.3:
+                raise AirflowException(f"너무 많은 기준 데이터 적재에 실패했습니다. (총 {total_baseline_tasks}개 중 {error_count}개 실패)")
+
+            logger.info("기준 데이터 과거 일/주/월봉 적재 완료.")
+
+            for stock_code in target_stocks:
+                all_success = True
+                for timeframe in timeframes_to_process:
+                    current_task += 1
+                    # 타임프레임별 최적화된 기간 조회
+                    period_for_timeframe = TIMEFRAME_PERIOD_MAP.get(timeframe, '1y')
+                    print(f"\n[{current_task}/{total_tasks}] 처리 중: {stock_code} - {timeframe} (기간: {period_for_timeframe})")
+                    try:
+                        success = load_initial_history(
+                            stock_code=stock_code, timeframe=timeframe, base_date=base_date, period=period_for_timeframe, execution_mode=execution_mode
+                        )
+                        if success:
+                            success_count += 1
+                            print(f"✅ 성공: {stock_code} - {timeframe}")
+                        else:
+                            fail_count += 1
+                            all_success = False
+                            print(f"⚠️ 데이터 없음:{stock_code} - {timeframe}")
+                    except Exception as e:
                         fail_count += 1
                         all_success = False
-                        print(f"⚠️ 데이터 없음:{stock_code} - {timeframe}")
-                except Exception as e:
-                    fail_count += 1
-                    all_success = False
-                    print(f"❌ 실패: {stock_code} - {timeframe}: {str(e)}")
-                time.sleep(0.3) # API 서버 보호
-            
-            if all_success:
-                db_session.query(Stock).filter(Stock.stock_code == stock_code).update({"backfill_needed": False})
-                db_session.commit()
-                print(f"'{stock_code}' 백필 완료. backfill_needed=False로 업데이트.")
+                        print(f"❌ 실패: {stock_code} - {timeframe}: {str(e)}")
+                    time.sleep(0.3) # API 서버 보호
+                
+                if all_success:
+                    db_session.query(Stock).filter(Stock.stock_code == stock_code).update({"backfill_needed": False})
+                    db_session.commit()
+                    print(f"'{stock_code}' 백필 완료. backfill_needed=False로 업데이트.")
 
-        # --- [신규 최종 단계] 4. 적재된 종목에 대한 업종 코드 백필 ---
-        try:
-            from src.master_data_manager import backfill_sector_codes
-            logger.info("초기 적재된 종목에 대한 업종 코드 매핑(백필)을 시작합니다.")
-            backfill_sector_codes()
-            logger.info("업종 코드 매핑(백필) 완료.")
-        except Exception as e:
-            logger.error(f"초기 적재 후 업종 코드 백필 중 오류 발생: {e}", exc_info=True)
+            # --- [신규 최종 단계] 4. 적재된 종목에 대한 업종 코드 백필 ---
+            try:
+                from src.master_data_manager import backfill_sector_codes
+                logger.info("초기 적재된 종목에 대한 업종 코드 매핑(백필)을 시작합니다.")
+                backfill_sector_codes()
+                logger.info("업종 코드 매핑(백필) 완료.")
+            except Exception as e:
+                logger.error(f"초기 적재 후 업종 코드 백필 중 오류 발생: {e}", exc_info=True)
 
-        # 4. 최종 결과 출력 (이하 생략)
+            # 4. 최종 결과 출력 (이하 생략)
 
     finally:
-        if session_owner:
+        if execution_mode != 'SIMULATION' and session_owner:
             db_session.close()
 
     # 4. 최종 결과 출력
@@ -262,62 +355,6 @@ def _run_initial_load_task(db_session=None, **kwargs):
 
     if fail_count > total_tasks * 0.3:
         raise AirflowException(f"너무 많은 작업({fail_count}/{total_tasks})이 실패했습니다.")
-    if execution_mode == 'SIMULATION' and base_date:
-        
-        from airflow.models import Variable
-        from datetime import datetime, timedelta
-        from pathlib import Path
-        import pandas as pd
-
-        print("\n🚀 시뮬레이션 변수 자동 설정 시작...")
-
-        # 1. simulation_base_time 설정 (기준일 다음 거래일 오전 9시)
-        base_date_obj = datetime.strptime(base_date, '%Y%m%d')
-        next_day_obj = base_date_obj + timedelta(days=1)
-        
-        # 다음날이 주말(토:5, 일:6)이면 월요일(0)으로 이동
-        if next_day_obj.weekday() >= 5:
-            next_day_obj += timedelta(days=7 - next_day_obj.weekday())
-        
-        start_time_str = next_day_obj.strftime('%Y%m%d') + '090000'
-        Variable.set('simulation_base_time', start_time_str)
-        print(f"  ✅ simulation_base_time 설정 완료: {start_time_str}")
-
-        # 2. simulation_end_time 설정 (Parquet 파일의 마지막 시간 기준)
-        stock_for_endtime = config.get('stock_code')
-        if not stock_for_endtime:
-             # 일괄 모드일 경우, 기준이 될 종목을 타겟 리스트의 첫 번째 종목으로 사용
-            stock_for_endtime = get_target_stocks()[0]
-
-        import os
-        from pathlib import Path
-
-        sim_base = os.getenv('SIMULATION_DATA_PATH')
-        if not sim_base:
-            raise AirflowException("환경변수 SIMULATION_DATA_PATH가 설정되어 있지 않습니다. 예: export SIMULATION_DATA_PATH=/opt/airflow/data/simulation")
-
-        parquet_path = Path(sim_base) / f"{stock_for_endtime}_5m_full.parquet"
-        
-        end_time_str = None
-        if parquet_path.exists():
-            df = pd.read_parquet(parquet_path)
-            if not df.empty:
-                last_timestamp = df.index.max()
-                end_time_str = last_timestamp.strftime('%Y%m%d%H%M%S')
-                Variable.set('simulation_end_time', end_time_str)
-                print(f"  ✅ simulation_end_time 설정 완료 (데이터 기준): {end_time_str}")
-        
-        if not end_time_str:
-            # Parquet 파일을 찾지 못하거나 비어있는 경우, 안전하게 2일 뒤로 설정
-            fallback_end_time_obj = next_day_obj + timedelta(days=2)
-            fallback_end_time_str = fallback_end_time_obj.strftime('%Y%m%d') + '153000'
-            Variable.set('simulation_end_time', fallback_end_time_str)
-            print(f"  ⚠️ Parquet 파일을 찾을 수 없어 기본 종료 시간으로 설정: {fallback_end_time_str}")
-
-        # 3. system_mode를 SIMULATION으로 자동 설정
-        Variable.set('system_mode', 'SIMULATION')
-        print(f"  ✅ system_mode 설정 완료: SIMULATION")
-        print("="*60)
 
 # DAG 정의
 with DAG(
@@ -347,18 +384,18 @@ with DAG(
             title="타임프레임 목록",
             description="수집할 타임프레임 목록을 지정합니다. 비워두면 기본 6개 타임프레임(5m, 30m, 1h, d, w, mon)을 모두 수집합니다."
         ),
-        "base_date": Param(
-            type=["null", "string"],
-            default=None,
-            title="기준일 (YYYYMMDD)",
-            description="데이터 조회의 기준일. 비워두면 현재 날짜를 사용합니다."
-        ),
         "execution_mode": Param(
             type="string",
             default="LIVE",
             title="실행 모드",
-            description="LIVE: 실제 API 호출, SIMULATION: 테스트 데이터 사용",
+            description="LIVE: API로 초기 적재, SIMULATION: DB 스냅샷 생성",
             enum=["LIVE", "SIMULATION"]
+        ),
+        "target_datetime": Param(
+            type=["null", "string"],
+            default="",
+            title="기준 시점 (YYYY-MM-DD HH:MM:SS)",
+            description="[LIVE 모드] 초기 적재의 종료 시점. 비워두면 가장 최근 거래일 기준으로 자동 설정됩니다. [SIMULATION 모드] 스냅샷 생성의 기준 시점 (필수 입력)."
         )
     },
     doc_md="""

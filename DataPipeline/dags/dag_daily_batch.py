@@ -1,13 +1,19 @@
 # /home/jscho/ChartInsight-Studio/DataPipeline/dags/dag_daily_batch.py
 
 import pendulum
+import json
+import logging
+from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
+
 from airflow.models.dag import DAG
 from airflow.models.param import Param
 from airflow.operators.python import PythonOperator
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import BranchPythonOperator
 from airflow.utils.task_group import TaskGroup
 from airflow.models import Variable
 from airflow.exceptions import AirflowException
-import logging
 
 # import master_data_manager
 from src.master_data_manager import sync_stock_master_to_db, update_analysis_target_flags
@@ -17,8 +23,79 @@ from src.analysis.financial_analyzer import analyze_financials_for_stocks
 from src.analysis.technical_analyzer import analyze_technical_for_stocks
 from sqlalchemy.dialects.postgresql import insert
 from src.database import SessionLocal, DailyAnalysisResult, FinancialAnalysisResult, Stock, Sector
-import logging
 import time
+
+def _calculate_default_target_datetime() -> str:
+    """
+    LIVE 모드의 target_datetime 기본값을 동적으로 계산합니다.
+    - 장 마감 후: 오늘 날짜의 16:00
+    - 장 중/전: 직전 거래일의 16:00
+    """
+    kst = ZoneInfo('Asia/Seoul')
+    now_kst = datetime.now(kst)
+    trading_end_time = dt_time(15, 30)
+
+    target_date = now_kst.date()
+
+    # 장 마감 시간 이전이면, 날짜를 하루 전으로 설정
+    if now_kst.time() < trading_end_time:
+        target_date -= timedelta(days=1)
+
+    # 주말 처리: 토요일(5)이면 금요일로, 일요일(6)이면 금요일로 이동
+    if target_date.weekday() == 5:  # Saturday
+        target_date -= timedelta(days=1)
+    elif target_date.weekday() == 6:  # Sunday
+        target_date -= timedelta(days=2)
+
+    # 최종 기준 시점을 오후 4시로 설정
+    default_dt = datetime.combine(target_date, dt_time(16, 0), tzinfo=kst)
+    return default_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+# --- 검증 함수 추가 ---
+def _validate_simulation_snapshot(**kwargs):
+    """
+    SIMULATION 모드에서, 파라미터가 없으면 Variable에서 기준 시점을 자동 감지하고,
+    파라미터가 있으면 Variable의 시점과 일치하는지 검증합니다.
+    """
+    logger = logging.getLogger(__name__)
+    params = kwargs.get('params', {})
+    execution_mode = params.get('execution_mode', 'LIVE')
+
+    if execution_mode != 'SIMULATION':
+        logger.info("✅ LIVE 모드: 스냅샷 검증 건너뛰고 계속 진행")
+        return 'continue_live_mode'
+
+    logger.info("SIMULATION 모드: 스냅샷 유효성 검증을 시작합니다.")
+
+    target_datetime = params.get('target_datetime')
+
+    try:
+        snapshot_json = Variable.get("simulation_snapshot_info")
+        snapshot_info = json.loads(snapshot_json)
+        snapshot_time = snapshot_info.get('snapshot_time')
+    except KeyError:
+        raise AirflowException(
+            "SIMULATION 데이터 스냅샷이 준비되지 않았습니다. "
+            "먼저 dag_initial_loader를 SIMULATION 모드로 실행하여 스냅샷을 생성해야 합니다."
+        )
+
+    # target_datetime이 없으면 Variable에서 자동 감지
+    if not target_datetime:
+        logger.info(f"target_datetime 파라미터가 비어있어, 스냅샷의 시간 '{snapshot_time}'로 자동 설정합니다.")
+        target_datetime = snapshot_time
+    else:
+        # target_datetime이 있으면 Variable과 일치하는지 검증
+        if target_datetime != snapshot_time:
+            raise AirflowException(
+                f"시점 불일치 오류! 분석하려는 시점({target_datetime})과 "
+                f"준비된 데이터 스냅샷의 시점({snapshot_time})이 다릅니다. "
+                f"dag_initial_loader를 올바른 execution_time으로 다시 실행하거나, "
+                f"현재 DAG의 execution_time을 스냅샷 시점으로 변경하십시오."
+            )
+
+    logger.info(f"✅ 스냅샷 검증 통과 (시점: {target_datetime}). 'continue_simulation_mode' 경로로 진행합니다.")
+    return 'continue_simulation_mode'
 
 # --- 1. 기본 설정 ---
 DEFAULT_ARGS = {
@@ -59,15 +136,17 @@ def _sync_stock_master(**kwargs):
 
 
 def _fetch_latest_low_frequency_candles(**kwargs):
-    """[수정] 모든 대상(종목,지수,업종)의 저빈도 캔들 '증분' 데이터 수집"""
+    """Task 3: 저빈도(일/주/월) 캔들 데이터 증분 수집"""
     execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
     logger = logging.getLogger(__name__)
+    
+    # SIMULATION 모드에서는 데이터 수집을 건너뜁니다.
     if execution_mode == 'SIMULATION':
-        logger.info("SIMULATION 모드: 저빈도 캔들 수집을 건너뜁니다.")
+        logger.info("✅ SIMULATION 모드: 데이터 수집을 건너뜁니다 (dag_initial_loader가 이미 준비).")
         return
-
-    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
+    
     ti = kwargs['ti']
+    # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
     _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
     if isinstance(_xcom_result, dict):
         stock_codes_from_xcom = _xcom_result.get('codes', [])
@@ -177,6 +256,9 @@ def _fetch_financial_grades_from_db(**kwargs):
     logger = logging.getLogger(__name__)
     ti = kwargs['ti']
 
+    # 실행 모드 확인 (SIMULATION에서는 simulation 스키마를 조회)
+    execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
+
     # Step 1: '게이트키퍼' Task로부터 최종 대상 목록을 XCom으로 받습니다.
     ti = kwargs['ti']
     _xcom_result = ti.xcom_pull(task_ids='update_analysis_target_flags', key='return_value') or {}
@@ -198,32 +280,40 @@ def _fetch_financial_grades_from_db(**kwargs):
     try:
         from sqlalchemy import func
         from sqlalchemy.sql import and_
-        
-        # 각 종목별로 가장 최신 analysis_date를 가진 레코드를 조회
-        # Subquery: 종목별 최신 날짜
-        latest_dates_subq = (
-            db.query(
-                FinancialAnalysisResult.stock_code,
-                func.max(FinancialAnalysisResult.analysis_date).label('latest_date')
-            )
-            .filter(FinancialAnalysisResult.stock_code.in_(filtered_codes))
-            .group_by(FinancialAnalysisResult.stock_code)
-            .subquery()
-        )
-        
-        # 실제 데이터 조회: 종목코드와 최신 날짜가 일치하는 레코드
-        results = (
-            db.query(FinancialAnalysisResult)
-            .join(
-                latest_dates_subq,
-                and_(
-                    FinancialAnalysisResult.stock_code == latest_dates_subq.c.stock_code,
-                    FinancialAnalysisResult.analysis_date == latest_dates_subq.c.latest_date
+
+        # 스키마 전환: SIMULATION 모드면 simulation 스키마에서 조회
+        target_table = FinancialAnalysisResult.__table__
+        original_schema = target_table.schema
+        if execution_mode == 'SIMULATION':
+            target_table.schema = 'simulation'
+        try:
+            # 각 종목별로 가장 최신 analysis_date를 가진 레코드를 조회
+            latest_dates_subq = (
+                db.query(
+                    FinancialAnalysisResult.stock_code,
+                    func.max(FinancialAnalysisResult.analysis_date).label('latest_date')
                 )
+                .filter(FinancialAnalysisResult.stock_code.in_(filtered_codes))
+                .group_by(FinancialAnalysisResult.stock_code)
+                .subquery()
             )
-            .all()
-        )
-        
+
+            # 실제 데이터 조회: 종목코드와 최신 날짜가 일치하는 레코드
+            results = (
+                db.query(FinancialAnalysisResult)
+                .join(
+                    latest_dates_subq,
+                    and_(
+                        FinancialAnalysisResult.stock_code == latest_dates_subq.c.stock_code,
+                        FinancialAnalysisResult.analysis_date == latest_dates_subq.c.latest_date
+                    )
+                )
+                .all()
+            )
+        finally:
+            # 스키마 복원
+            target_table.schema = original_schema
+
         # Step 3: 결과를 XCom 전달 형식으로 변환
         financial_results = {}
         for result in results:
@@ -232,14 +322,14 @@ def _fetch_financial_grades_from_db(**kwargs):
                 'eps_annual_growth_avg': float(result.eps_annual_growth_avg) if result.eps_annual_growth_avg is not None else None,
                 'financial_grade': result.financial_grade
             }
-        
+
         logger.info(
             f"재무 등급 조회 완료. {len(financial_results)}개 종목의 결과를 XCom으로 전달합니다. "
             f"(조회 대상: {len(filtered_codes)}개, 미조회: {len(filtered_codes) - len(financial_results)}개)"
         )
-        
+
         return financial_results
-        
+
     except Exception as e:
         logger.error(f"재무 등급 조회 중 오류 발생: {e}", exc_info=True)
         return {}
@@ -279,31 +369,37 @@ def _run_technical_analysis(**kwargs):
 
 def _load_final_results(**kwargs):
     """Task 6: 모든 분석 결과를 `daily_analysis_results` 테이블에 적재"""
-    execution_mode = kwargs.get('params', {}).get('execution_mode', 'LIVE')
+    params = kwargs.get('params', {})
+    execution_mode = params.get('execution_mode', 'LIVE')
     logger = logging.getLogger(__name__)
     ti = kwargs['ti']
-    # Airflow가 제공하는 논리적 실행일자 (logical_date)을 사용합니다.
-    # 우선적으로 Airflow의 logical_date를 사용하되, 없으면 params.analysis_date를 사용합니다.
-    logical_date = kwargs.get('logical_date') or kwargs.get('params', {}).get('analysis_date')
-    
-    # params.analysis_date가 빈 문자열이면 현재 시각을 사용
-    if not logical_date:
-        import pendulum
-        logical_date = pendulum.now('UTC')
-        logger.info(f"analysis_date 파라미터가 없어 현재 UTC 시각 사용: {logical_date}")
-    
-    # 문자열로 전달된 경우 pendulum으로 파싱
-    if isinstance(logical_date, str):
-        try:
-            import pendulum
-            logical_date = pendulum.parse(logical_date, tz='Asia/Seoul')
-            logger.info(f"analysis_date 파싱 성공: {logical_date}")
-        except Exception as e:
-            # 파싱 실패 시 DAG 실행을 중단하여 데이터 오염 방지
-            error_msg = f"analysis_date 파라미터 '{logical_date}' 파싱 실패: {e}. " \
-                       f"올바른 날짜 형식(YYYY-MM-DD 또는 YYYYMMDD)을 사용하거나 비워두십시오."
-            logger.error(error_msg)
-            raise AirflowException(error_msg)
+
+    # 1. 'target_datetime' 결정 (지능형/자동감지 로직 통합)
+    target_datetime_str = params.get('target_datetime')
+
+    if not target_datetime_str:
+        if execution_mode == 'LIVE':
+            target_datetime_str = _calculate_default_target_datetime()
+            logger.info(f"LIVE 모드에서 기준 시점이 지정되지 않아, '{target_datetime_str}'로 자동 설정합니다.")
+        elif execution_mode == 'SIMULATION':
+            try:
+                snapshot_json = Variable.get("simulation_snapshot_info")
+                snapshot_info = json.loads(snapshot_json)
+                target_datetime_str = snapshot_info.get('snapshot_time')
+                logger.info(f"SIMULATION 모드에서 기준 시점이 지정되지 않아, 스냅샷의 시간 '{target_datetime_str}'로 자동 설정합니다.")
+            except (KeyError, json.JSONDecodeError):
+                 raise AirflowException("SIMULATION 모드 자동 감지 실패: 'simulation_snapshot_info' Variable을 찾을 수 없거나 형식이 잘못되었습니다.")
+
+    if not target_datetime_str:
+        raise AirflowException(f"{execution_mode} 모드에서 기준 시점(target_datetime)을 결정할 수 없습니다.")
+
+    # 2. 'analysis_date' 추출 (기존 로직과 동일)
+    try:
+        analysis_date_only = datetime.strptime(target_datetime_str, '%Y-%m-%d %H:%M:%S').date()
+    except ValueError:
+        raise AirflowException(f"target_datetime 형식이 잘못되었습니다. 'YYYY-MM-DD HH:MM:SS' 형식을 사용해주세요.")
+
+    logger.info(f"분석 결과 저장을 위한 최종 analysis_date: {analysis_date_only}")
 
     # Step 1: 모든 병렬 Task로부터 분석 결과(딕셔너리)를 XCom으로 받기
     rs_results = ti.xcom_pull(task_ids='calculate_core_metrics.calculate_rs_score', key='return_value') or {}
@@ -313,25 +409,6 @@ def _load_final_results(**kwargs):
     if not (rs_results or financial_results or technical_results):
         logger.warning("모든 분석 결과를 XCom으로부터 받지 못했습니다. Task를 건너뜁니다.")
         return
-
-    # Step 2: 분석 기준일을 Date로 정규화 (중복 적재 방지)
-    # logical_date는 pendulum.DateTime 또는 datetime이 될 수 있으므로 날짜 부분만 사용합니다.
-    try:
-        if hasattr(logical_date, 'date'):
-            analysis_date_only = logical_date.date()
-        else:
-            # fallback: parse string or use current date
-            from datetime import datetime
-            import pendulum
-            if isinstance(logical_date, str):
-                analysis_date_only = pendulum.parse(logical_date, tz='Asia/Seoul').date()
-            elif isinstance(logical_date, datetime):
-                analysis_date_only = logical_date.date()
-            else:
-                analysis_date_only = pendulum.now('Asia/Seoul').date()
-    except Exception:
-        import pendulum
-        analysis_date_only = pendulum.now('Asia/Seoul').date()
 
     # Step 3: 데이터 취합 (Aggregation)
     all_codes = set(rs_results.keys()) | set(financial_results.keys()) | set(technical_results.keys())
@@ -405,30 +482,25 @@ with DAG(
     dag_id='dag_daily_batch',
     default_args=DEFAULT_ARGS,
     params={
-    # analysis_date: 기본값을 비워 둡니다. 빈값일 경우 실제 실행 시 현재 UTC 시각을 분석 날짜로 사용합니다.
-    # 사용자가 날짜를 특정하면 해당 날짜(Asia/Seoul 기준)로 파싱하여 사용합니다.
-    "analysis_date": Param(
-        type=["null", "string"],
-        default="",
-        title="분석 기준일 (YYYY-MM-DD)",
-        description="분석의 기준이 될 날짜. 비워두면 Airflow의 논리적 실행일(logical_date)을 사용합니다."
-    ),
-        # execution_mode 파라미터를 UI에서 선택 가능하도록 정의
         "execution_mode": Param(
             type="string",
             default="LIVE",
             title="Execution Mode",
-            description="파이프라인의 실행 모드를 선택합니다. (LIVE: 실제 API/DB, SIMULATION: 로컬 파일)",
+            description="실행 모드를 선택합니다. (LIVE: 실제 DB, SIMULATION: 스냅샷 DB)",
             enum=["LIVE", "SIMULATION"],
         ),
-        # 테스트용: 특정 종목만 빠르게 실행할 수 있는 파라미터
+        "target_datetime": Param(
+            type=["null", "string"],
+            default="",
+            title="기준 시점 (YYYY-MM-DD HH:MM:SS)",
+            description="[LIVE 모드] 분석 기준 시점. 비워두면 가장 최근 거래일 기준으로 자동 설정됩니다. [SIMULATION 모드] 스냅샷의 기준 시점 (필수 입력)."
+        ),
         "test_stock_codes": Param(
             type=["null", "string"],
             default="",
             title="[테스트용] 특정 종목 대상 실행",
             description="쉼표로 구분된 종목 코드를 입력하세요. (예: 005930,000660)"
         ),
-        # (Deprecated) 기존의 run_for_all_filtered_stocks, sample_stock_codes 파라미터 제거됨
     },
     # 스케줄을 Variable로 관리하면 운영 중 UI에서 변경 가능
     schedule_interval=Variable.get('daily_batch_schedule', default_var='0 17 * * 1-5'),
@@ -472,41 +544,54 @@ with DAG(
     # 기존 apply_analysis_filters_task는 제거되고, 대신 DB에 플래그를 업데이트하고 XCom을 반환하는 Task를 사용합니다.
     def _update_analysis_target_flags_task(**kwargs):
         """
-        선행 Task로부터 XCom으로 활성 종목 리스트를 받아, '필터 제로'를 적용하여
-        is_analysis_target 플래그를 업데이트합니다.
+        실행 대상 종목을 결정하고, '필터 제로'를 적용하여 is_analysis_target 플래그를 업데이트합니다.
+        SIMULATION 모드에서는 Airflow Variable에서 대상 종목을 자동으로 감지할 수 있습니다.
         """
         logger = logging.getLogger(__name__)
         ti = kwargs['ti']
-
-        # 1. 파라미터 우선 처리: UI로 전달된 test_stock_codes가 있으면 우선 사용
         params = kwargs.get('params', {})
-        test_stock_codes_param = params.get('test_stock_codes') or params.get('test_stock_codes', "")
+        execution_mode = params.get('execution_mode', 'LIVE')
+        test_stock_codes_param = params.get('test_stock_codes', "")
 
         db = SessionLocal()
         try:
             codes_to_process = []
             if test_stock_codes_param:
-                # 지원 입력 형태: 배열 또는 쉼표로 구분된 문자열
+                # 1. 사용자가 test_stock_codes를 직접 입력한 경우: 항상 최우선으로 적용
                 if isinstance(test_stock_codes_param, str):
                     codes_to_process = [c.strip() for c in test_stock_codes_param.split(',') if c.strip()]
                 elif isinstance(test_stock_codes_param, (list, tuple)):
                     codes_to_process = [str(c).strip() for c in test_stock_codes_param if str(c).strip()]
-
                 logger.info(f"test_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
             else:
-                # 2. 파라미터가 없으면 기존 흐름: sync_task의 XCom 결과 사용
-                all_active_codes = ti.xcom_pull(task_ids='sync_stock_master')
-                if not all_active_codes:
-                    logger.warning("XCom으로부터 활성 종목 리스트를 받지 못했습니다. Task를 건너뜁니다.")
-                    return {"status": "skipped", "codes": [], "processed_count": 0, "missing": []}
-                codes_to_process = all_active_codes
-                logger.info(f"XCom으로부터 {len(codes_to_process)}개의 활성 종목 리스트를 받았습니다.")
+                # 2. 사용자가 test_stock_codes를 비워둔 경우: 모드에 따라 동작 분기
+                if execution_mode == 'SIMULATION':
+                    # 2-A. SIMULATION 모드: Airflow Variable에서 자동 감지
+                    logger.info("SIMULATION 모드에서 test_stock_codes가 비어있어, Airflow Variable에서 분석 대상을 자동 감지합니다.")
+                    try:
+                        snapshot_json = Variable.get("simulation_snapshot_info")
+                        snapshot_info = json.loads(snapshot_json)
+                        codes_to_process = snapshot_info.get('stock_codes', [])
+                        if not codes_to_process:
+                             raise AirflowException("Variable 'simulation_snapshot_info'에 'stock_codes'가 비어있습니다.")
+                        logger.info(f"스냅샷에서 {len(codes_to_process)}개 종목을 분석 대상으로 설정합니다.")
+                    except KeyError:
+                        raise AirflowException("SIMULATION 데이터 스냅샷 정보(Variable 'simulation_snapshot_info')를 찾을 수 없습니다.")
+                else:
+                    # 2-B. LIVE 모드: 기존 방식대로 선행 Task(sync_stock_master)의 결과(XCom)를 사용
+                    all_active_codes = ti.xcom_pull(task_ids='sync_stock_master')
+                    if not all_active_codes:
+                        logger.warning("XCom으로부터 활성 종목 리스트를 받지 못했습니다. Task를 건너뜁니다.")
+                        return {"status": "skipped", "codes": [], "processed_count": 0}
+                    codes_to_process = all_active_codes
+                    logger.info(f"XCom으로부터 {len(codes_to_process)}개의 활성 종목 리스트를 받았습니다.")
 
             if not codes_to_process:
                 logger.warning("처리할 대상 종목이 없습니다.")
-                return {"status": "skipped", "codes": [], "processed_count": 0, "missing": []}
+                return {"status": "skipped", "codes": [], "processed_count": 0}
 
-            # 3. 입력 검증: DB에 실제 존재하는 종목만 선별 (대량 처리 대비 배치)
+            # (이하 '필터 제로' 적용 및 최종 대상 확정 로직은 기존과 동일)
+            # 3. 입력 검증: DB에 실제 존재하는 종목만 선별
             valid_codes = []
             missing_codes = []
             batch_size = 500
@@ -543,6 +628,7 @@ with DAG(
     update_analysis_target_flags_task = PythonOperator(
         task_id='update_analysis_target_flags',
         python_callable=_update_analysis_target_flags_task,
+        trigger_rule='one_success',  # SIMULATION/LIVE 모드 분기에서 Task가 올바르게 실행되도록 설정
         doc_md="""
         #### Task: Update Analysis Target Flags
         - 목적: `Stock` 테이블의 모든 활성 종목에 '필터 제로'를 적용하여 `is_analysis_target` 플래그를 업데이트합니다.
@@ -572,17 +658,42 @@ with DAG(
             """,
         )
 
-    # --- 5. Task 의존성 설정 ---
-    # 종목 마스터 동기화가 가장 먼저 실행되도록 의존성 설정
     run_technical_analysis_task = PythonOperator(
         task_id='run_technical_analysis',
         python_callable=_run_technical_analysis,
         doc_md="""
-        #### Task: Run Technical Analysis
-        - 목적: 기술적 지표/패턴 분석
+        #### Sub-Task: Run Technical Analysis
+        - 목적: 기술적 지표 및 패턴 분석
         """,
     )
+
+    # --- 5. Task 의존성 설정 ---
+    # 검증 Task 및 분기 Operator 추가
+    validate_snapshot_task = BranchPythonOperator(
+        task_id='validate_simulation_snapshot',
+        python_callable=_validate_simulation_snapshot,
+        doc_md="""
+        #### Task: Validate Simulation Snapshot
+        - 목적: SIMULATION 모드 실행 시, Airflow Variable에 저장된 스냅샷 정보와
+          현재 DAG의 실행 파라미터가 일치하는지 검증합니다.
+        - 출력: 분기 경로 (continue_simulation_mode 또는 continue_live_mode)
+        """,
+    )
+
+    # 분기 처리를 위한 Empty Operators
+    continue_live_mode_task = EmptyOperator(task_id='continue_live_mode')
+    continue_simulation_mode_task = EmptyOperator(task_id='continue_simulation_mode')
+
+    # 1. 검증 Task가 가장 먼저 실행된 후, 두 경로로 분기합니다.
+    validate_snapshot_task >> [continue_live_mode_task, continue_simulation_mode_task]
+
+    # 2. LIVE 모드 경로는 기존처럼 sync_stock_master_task를 실행합니다.
+    continue_live_mode_task >> sync_stock_master_task
     sync_stock_master_task >> update_analysis_target_flags_task
+
+    # 3. SIMULATION 모드 경로는 sync_stock_master_task를 건너뛰고,
+    #    바로 update_analysis_target_flags_task로 연결됩니다.
+    continue_simulation_mode_task >> update_analysis_target_flags_task
 
     # refresh_baseline_candles_task와 fetch_latest_low_frequency_candles_task는 서로 의존성이 없으므로 병렬 실행 가능
     update_analysis_target_flags_task >> fetch_latest_low_frequency_candles_task

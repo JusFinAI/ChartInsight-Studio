@@ -21,6 +21,13 @@
 
 
 ## 1.1 컨테이너 종료 및 볼륨 삭제
+
+- 명령:
+  ```
+  docker-compose --env-file .env.docker --profile pipeline down 
+  ```
+-설명 : 컨테이너 종료 
+
 - 명령:
   ```
   docker-compose --env-file .env.docker --profile pipeline down -v
@@ -50,6 +57,12 @@
 
 - 참고: `docker compose` 명령으로도 사용 가능함 (`docker compose ...`로 대체 가능, 버전 2 이상 권장)
 
+- 명령: 재시작 (restart)
+```
+docker compose --env-file .env.docker --profile pipeline restart airflow-scheduler airflow-webserver
+```
+- 설명: 컨테이너 재시작
+
 
 
 ## 2) Postgres: 컨테이너 내부 환경변수 확인
@@ -61,36 +74,33 @@
 - 사용 상황: DB 연결 실패 시 (예: psql 오류) 변수 확인.
 
 ## 3) Postgres: 쿼리 실행 (컨테이너 내부 환경변수 사용, 성공)
-- 명령(성공 예):
+
+
+**financial_analysis_results 테이블의 전체 컬럼과 타입 조회**:
+dag_financials_update 실행 직후 \d 명령으로 live.financial_analysis_results 테이블의 컬럼명과 데이터 타입을 확인합니다.
+
+```bash
+docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c '\\d live.financial_analysis_results' | grep -E '^\\s+\\w+'"
+```
+
+
+**financial_analysis_results 테이블의 전체 컬럼 조회**:
+: `dag_financials_update` 실행 직후 financial_analysis_results 테이블의 전체 컬럼을 조회하여 모든 데이터가 정상적으로 저장되었는지 확인합니다.
+
+  ```bash
+  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT * FROM live.financial_analysis_results WHERE stock_code IN ('005930','000660','373220','005380','035420','207940','005490','051910','105560','096770','033780','247540') ORDER BY stock_code, analysis_date DESC;\""
   ```
-  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, market_rs_score, financial_grade FROM simulation.daily_analysis_results WHERE analysis_date = '2025-10-01' ORDER BY stock_code LIMIT 10;\""
-  ```
-- 설명: 컨테이너 환경변수를 사용하여 안전하게 psql 쿼리를 실행. `bash -c`를 사용하고 `\$POSTGRES_USER`처럼 환경변수 앞에 백슬래시를 추가해야 컨테이너 내부에서 정확히 확장됩니다. simulation/live 스키마 테이블(예: daily_analysis_results) 쿼리 예시.
-- 사용 상황: DAG(load_final_results) 후 데이터 검증 (예: 주식 코드별 RS/재무 등급 확인, SIMULATION 모드 결과).
 
-### 실전 사용 사례: 특정 종목군의 재무분석 결과 조회
+- **financial_analysis_results 테이블의 특정 컬럼 조회**: 
+`dag_financials_update` 실행 직후 특정 종목들의 분석 결과가 `live.financial_analysis_results` 테이블의 stock_code, analysis_date, financial_grade, eps_growth_yoy, eps_annual_growth_avg 컬럼에 정상적으로  저장되었는지 확인합니다..
 
-- **목적**: `dag_financials_update` 실행 직후 특정 종목들의 분석 결과가 `live.financial_analysis_results`에 정상 저장되었는지 빠르게 검증합니다.
-- **주의점(실수 방지)**: 호스트 셸에서 `"`와 `'$VAR'`가 중첩될 때 확장 문제가 발생하여 `psql`에 잘못된 인자가 전달될 수 있습니다. 컨테이너 내부에서 환경변수를 확장하려면 `bash -c`와 `\$VAR`(백슬래시로 이스케이프) 또는 `-c` 안에서 `"`를 적절히 이스케이프해야 합니다.
-
-- **권장 명령(안전한 형태)**:
   ```bash
   docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, analysis_date, financial_grade, eps_growth_yoy, eps_annual_growth_avg FROM live.financial_analysis_results WHERE stock_code IN ('005930','000660','373220','005380','035420','207940','005490','051910','105560','096770','033780','247540') ORDER BY stock_code, analysis_date DESC;\""
   ```
 
-- **활용 케이스**:
-  - 통합 테스트 (예: `stock_codes` 파라미터로 지정한 12개 종목)의 성공 여부를 확인할 때 사용
-  - DAG 실행 후 `analysis_date`별로 결과가 올바르게 UPSERT되었는지 검증
-  - `NaN` 또는 `0.00` 같은 계산 이상치가 있을 경우, 해당 종목을 추적하여 원본 로그(`airflow` 로그)에서 경고/에러 메시지를 확인
-
-- **실행 팁**:
-  - 명령 실행 전 컨테이너가 `running` 상태인지 확인: `docker compose --env-file .env.docker --profile pipeline ps`
-  - 쿼리 결과가 없으면 `SELECT COUNT(*) ...`로 먼저 존재 여부를 체크하여 디버깅 범위를 좁히세요.
-
-## 추가: 오늘 실행(analysis_date 기준) 핵심 컬럼 확인
 
 - **목적**: `dag_daily_batch` 전체 실행 후 오늘(예: `2025-10-24`) 생성된 주요 컬럼(`market_rs_score`, `sector_rs_score`, `financial_grade`, 기술적 컬럼 등)이 정상적으로 채워졌는지 빠르게 확인합니다.
-- **권장 명령(안전한 형태)**:
+
   ```bash
   docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c \
   "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, analysis_date, market_rs_score, sector_rs_score, financial_grade, eps_growth_yoy, eps_annual_growth_avg, sma_20_val, rsi_14_val FROM live.daily_analysis_results WHERE analysis_date = '2025-10-24' AND (financial_grade IS NOT NULL OR market_rs_score IS NOT NULL) ORDER BY stock_code LIMIT 500;\""
@@ -112,7 +122,7 @@
 - 권장 실행 위치: `postgres-tradesmart` 컨테이너 내부 (컨테이너 환경변수 사용 권장)
 - 권장 명령(컨테이너 내부에서 env 변수를 확장하도록 실행):
   ```
-  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, stock_name, is_active, backfill_needed, is_analysis_target FROM live.stocks WHERE stock_code IN ('005930', '000660') ORDER BY stock_code;\""
+  docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c \"SELECT stock_code, stock_name, is_active, backfill_needed, is_analysis_target FROM live.stocks WHERE stock_code IN ('005930','000660','373220','005380','035420','207940','005490','051910','105560','096770','033780','247540') ORDER BY stock_code;\""
   ```
 - 설명 및 실행 팁:
   - `bash -c`를 사용하고 `\$POSTGRES_USER`처럼 환경변수 앞에 백슬래시를 추가해야 컨테이너 내부에서 정확히 확장됩니다.

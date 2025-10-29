@@ -34,6 +34,7 @@ from src.database import SessionLocal, Candle, Stock
 from src.kiwoom_api.services.chart import get_chart, get_minute_chart
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from src.utils.logging_kst import configure_kst_logger
 
@@ -422,6 +423,102 @@ def _load_simulation_data(stock_code: str, timeframe: str, execution_time: str =
         import traceback
         logger.error(traceback.format_exc())
         return pd.DataFrame()
+
+
+def create_simulation_snapshot(
+    stock_codes: list,
+    execution_time: str,
+    timeframes: list = None
+) -> dict:
+    """
+    LIVE DB의 데이터를 기반으로 simulation.candles에 시점 스냅샷을 생성합니다.
+
+    Args:
+        stock_codes: 복제할 종목 코드 리스트
+        execution_time: 복제 기준 시점 ('YYYY-MM-DD HH:MM:SS')
+        timeframes: 복제할 타임프레임 리스트. None이면 전체 6개 타임프레임.
+
+    Returns:
+        dict: 스냅샷 생성 결과 메타데이터
+    """
+    if timeframes is None:
+        timeframes = ['5m', '30m', '1h', 'd', 'w', 'mon']
+
+    # 1. execution_time의 형식을 엄격하게 검사합니다.
+    try:
+        exec_dt = datetime.strptime(execution_time, '%Y-%m-%d %H:%M:%S')
+    except ValueError as e:
+        raise ValueError(f"execution_time must be in 'YYYY-MM-DD HH:MM:SS' format. Got: '{execution_time}'") from e
+
+    db = SessionLocal()
+    try:
+        # 2. TRUNCATE (commit 없이 단일 트랜잭션으로 묶기 위함)
+        logger.info("Initializing SIMULATION environment: TRUNCATE simulation.candles")
+        db.execute(text("TRUNCATE TABLE simulation.candles"))
+
+        # 3. 각 종목/타임프레임별 데이터 복제
+        for code in stock_codes:
+            for tf in timeframes:
+                period_str = TIMEFRAME_DEFAULT_PERIODS.get(tf, '1y')
+                logger.info(f"Preparing to copy data for [{code}]-[{tf}]...")
+                
+                # 기간(period) 문자열을 timedelta로 변환
+                num = int(period_str[:-1])
+                unit = period_str[-1]
+                if unit == 'y': delta = timedelta(days=num * 365)
+                elif unit == 'm': delta = timedelta(days=num * 30)
+                elif unit == 'w': delta = timedelta(weeks=num)
+                elif unit == 'd': delta = timedelta(days=num)
+                else: raise ValueError(f"Unknown period unit: {unit}")
+                
+                start_dt = exec_dt - delta
+                
+                # SQL 실행
+                sql = text("""
+                    INSERT INTO simulation.candles
+                    SELECT * FROM live.candles
+                    WHERE stock_code = :code
+                      AND timeframe = :tf
+                      AND timestamp BETWEEN :start_time AND :exec_time
+                """)
+                
+                params = {
+                    'code': code,
+                    'tf': TIMEFRAME_TO_DB_FORMAT[tf],
+                    'exec_time': exec_dt,
+                    'start_time': start_dt
+                }
+                
+                db.execute(sql, params)
+        
+        # 4. 모든 INSERT 작업이 성공했을 때만 단 한 번 commit 합니다.
+        db.commit()
+        logger.info("Snapshot creation transaction committed successfully.")
+
+        # 5. Commit 이후, DB에 저장된 실제 행 수를 정확하게 계산합니다.
+        total_rows = db.execute(text("SELECT COUNT(*) FROM simulation.candles")).scalar_one()
+        logger.info(f"Verification successful: {total_rows} total rows found in simulation.candles.")
+
+        return {
+            "stock_codes": stock_codes,
+            "timeframes": timeframes,
+            "total_rows": total_rows,
+            "execution_time": execution_time,
+            "status": "completed",
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"create_simulation_snapshot failed: {e}", exc_info=True)
+        return {
+            "stock_codes": stock_codes,
+            "timeframes": timeframes,
+            "total_rows": 0,
+            "status": "failed",
+            "error": str(e),
+        }
+    finally:
+        db.close()
 
 def load_initial_history(stock_code: str, timeframe: str, base_date: str = None, period: str = None, execution_mode: str = 'LIVE') -> bool:
     """과거의 특정 기간 데이터를 대량으로 조회하여 DB에 저장합니다.

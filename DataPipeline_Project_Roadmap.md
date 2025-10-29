@@ -60,28 +60,22 @@
  **완료 상태**: 성공적으로 구현 및 검수 완료
 ---
 
+#### **과제 5: `dag_financials_update` 통합 테스트 — 완료 상태: ✅ 완료**
+
+- **목표**: `dag_daily_batch`의 중요한 데이터 소스인 재무 등급이 정상적으로 생성되는지 확인하고, 최근 리팩토링의 영향을 받지 않았는지 검증합니다.
+- **수행 방안**: `dag_financials_update`를 수동으로 실행한 후, `psql`을 통해 `live.financial_analysis_results` 테이블에 최신 날짜의 재무 분석 결과가 잘 저장되었는지 확인합니다.
+- **결과 요약**: 통합 테스트 완료 — YoY 및 연평균 성장률 계산 정상화, API 호출량 최적화(일일 한도 내 운영 확인).
+
+
 ### 4. 남은 과제 로드맵 (Remaining Tasks Roadmap)
 
 프로젝트 완성을 위해 남은 과제들을 **리팩토링 소요가 적은 순서 (간단한 작업부터)** 로 아래와 같이 정렬했습니다. 이 순서대로 과제를 해결해 나가는 것을 권장합니다.
 
----
 
-#### **과제 5: `dag_financials_update` 통합 테스트**
-
-- **목표**: `dag_daily_batch`의 중요한 데이터 소스인 재무 등급이 정상적으로 생성되는지 확인하고, 최근 리팩토링의 영향을 받지 않았는지 검증합니다.
-- **수행 방안**: `dag_financials_update`를 수동으로 실행한 후, `psql`을 통해 `live.financial_analysis_results` 테이블에 최신 날짜의 재무 분석 결과가 잘 저장되었는지 확인합니다.
-- **예상 소요**: **매우 낮음** (코드 수정 없음, 실행 및 검증만 필요)
-
-
-#### **과제 6: Airflow DAG 실행 정책 안정화 (P2 과제)**
-
-- **목표**: DAG 활성화 시 의도치 않은 과거 스케줄이 실행되는 현상을 방지하여, DAG 실행의 예측 가능성을 100% 확보합니다.
-- **수행 방안**: `p2_dag_scheduling_stability_report.md` 문서에 기술된 **"실행 시간 검증 가드(Guard)"** 방안을 `dag_daily_batch` 등 주요 DAG에 적용합니다. `BranchPythonOperator`를 사용해 DAG의 첫 단계에서 실행 시간을 검증하고, 너무 과거의 실행일 경우 후속 작업을 건너뛰도록(Skip) 구현합니다.
-- **예상 소요**: **중간** (DAG 파일에 신규 Task 및 의존성 추가 필요)
 
 ---
 
-####**과제 7: SIMULATION 모드 아키텍처 동기화**
+####**과제 6 SIMULATION 모드 아키텍처 동기화**
 
 - **목표**: `LIVE` 모드와 `SIMULATION` 모드의 동작을 일치시켜 시뮬레이션의 신뢰도를 확보하고, 과거 데이터 기반의 전략 백테스팅을 가능하게 합니다.
 - **수행 방안**: `execution_mode='SIMULATION'` 파라미터가 데이터 소스(API 대신 Parquet 파일 로드)만 교체하도록 `data_collector.py`를 리팩토링합니다. `rs_calculator.py`, `financial_analyzer.py` 등 분석 모듈들이 `LIVE` 모드와 동일한 코드를 공유하도록 구조를 개선합니다.
@@ -90,12 +84,19 @@
 
 ---
 
-#### **과제 8: `dag_daily_batch` End-to-End 통합 테스트**
+#### **과제 7 Airflow DAG 실행 정책 안정화 (P2 과제)**
 
-- **목표**: 데이터 수집 이후의 핵심 분석 Task들(`calculate_rs_score`, `run_technical_analysis`)과 최종 결과를 `daily_analysis_results` 테이블에 저장하는 `load_final_results` Task까지, `dag_daily_batch`의 전 과정이 올바르게 동작하는지 최종 검증합니다.
-- **수행 방안**: `dag_daily_batch`를 수동으로 실행한 후, `psql`을 통해 `live.daily_analysis_results` 테이블에 최신 날짜의 데이터가 생성되었는지, 그리고 `market_rs_score`, `financial_grade` 등의 분석 컬럼들이 값으로 잘 채워져 있는지 확인합니다.
-- **예상 소요**: **낮음** (코드 수정 없음, 실행 및 검증만 필요)
+- **목표**: DAG 활성화 시 의도치 않은 과거 스케줄이 실행되는 현상을 방지하여, DAG 실행의 예측 가능성을 100% 확보합니다.
+- **수행 방안**: `p2_dag_scheduling_stability_report.md` 문서에 기술된 **"실행 시간 검증 가드(Guard)"** 방안을 `dag_daily_batch` 등 주요 DAG에 적용합니다. `BranchPythonOperator`를 사용해 DAG의 첫 단계에서 실행 시간을 검증하고, 너무 과거의 실행일 경우 후속 작업을 건너뛰도록(Skip) 구현합니다.
+- **예상 소요**: **중간** (DAG 파일에 신규 Task 및 의존성 추가 필요)
 
+
+#### **과제 8: 실전 운영을 위한 End-to-End 통합 테스트**
+
+- **목표**: 데이터 수집 부터 시작하여, 모든 일간 단위의 DAG, 주간 단위의 DAG가 올바르게 동작하는지 확인함으로서, 실전 운영을 위한 완벽성을 갖추고 있는지 확인합니다.
+
+- **수행 방안**: 
+  - 모든 일간 단위의 DAG, 주간 단위의 DAG를 실행하고, 그 결과물(DB 테이블)을 `dag_daily_batch`가 다음 실행 시 정상적으로 소비하여 분석을 수행하는지 전체 데이터 흐름을 검증.
 ---
 
 
