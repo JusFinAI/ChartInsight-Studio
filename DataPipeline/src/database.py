@@ -66,8 +66,10 @@ class Stock(Base):
     __tablename__ = "stocks"
     # __table_args__에 ForeignKeyConstraint 추가
     __table_args__ = (
-        ForeignKeyConstraint(['sector_code'], ['live.sectors.sector_code'], name='fk_stock_sector_code'),
-        {'schema': 'live'}
+        ForeignKeyConstraint(['sector_code'], # 1. 이 테이블(stocks)의 'sector_code' 열이
+                             ['live.sectors.sector_code'], # 2. live.sectors' 테이블의 'sector_code' 열을 참조합니다.
+                             name='fk_stock_sector_code'), # 3. 이 제약조건의 이름은 'fk_stock_sector_code'입니다.
+        {'schema': 'live'} # 4. 이 테이블의 스키마는 'live'입니다.
     )
 
     stock_code = Column(String(20), primary_key=True, index=True)  # 종목코드 (기본키)
@@ -195,17 +197,15 @@ class FinancialAnalysisResult(Base):
     목적:
     - dag_financials_update가 주 1회 DART API를 통해 수집한 재무 데이터를 분석하여
       EPS 성장률 및 재무 등급을 계산한 결과를 영구 저장합니다.
-    - dag_daily_batch는 매일 이 테이블을 조회하여 최신 재무 등급을 사용합니다.
+    - 데이터歷史 보존: 동일 종목의 서로 다른 날짜 보고서를 모두 보존합니다.
     
     특징:
-    - stock_code + analysis_date 복합 유니크 제약: 같은 날짜에 동일 종목의 분석 결과가 중복 저장되지 않도록 보장
+    - (stock_code, analysis_date) 복합 Primary Key: 분기별 데이터 누적 저장
+    - UniqueConstraint 제거: Primary Key가 이미 유일성 보장
     - analysis_date, financial_grade 컬럼에 인덱스 추가: 조회 성능 최적화
     """
     __tablename__ = 'financial_analysis_results'
     __table_args__ = (
-        # 복합 유니크 제약: 같은 종목에 대해 같은 날짜의 분석 결과는 하나만 존재
-        UniqueConstraint('stock_code', 'analysis_date', name='_stock_analysis_date_uc'),
-        
         # 성능 최적화를 위한 인덱스
         Index('idx_far_analysis_date', 'analysis_date'),  # 최신 날짜 조회 최적화
         Index('idx_far_financial_grade', 'financial_grade'),  # 등급별 필터링 최적화
@@ -213,14 +213,18 @@ class FinancialAnalysisResult(Base):
         {'schema': 'live'}  # 명시적 스키마 지정
     )
     
-    # Primary Key
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    # Foreign Key: 어떤 종목의 분석 결과인지
-    stock_code = Column(String(6), ForeignKey('live.stocks.stock_code'), nullable=False, index=True)
-    
-    # 분석 기준 날짜
-    analysis_date = Column(Date, nullable=False)
+    # ✅ 복합 Primary Key: (stock_code, analysis_date)
+    stock_code = Column(
+        String(6), 
+        ForeignKey('live.stocks.stock_code'), 
+        primary_key=True,  # ✅ PK 1
+        nullable=False
+    )
+    analysis_date = Column(
+        Date, 
+        primary_key=True,  # ✅ PK 2
+        nullable=False
+    )
     
     # EPS 성장률 지표
     eps_growth_yoy = Column(Numeric(10, 2), nullable=True, comment='최근 분기 YoY EPS 성장률 (%)')

@@ -45,7 +45,7 @@ class _FinancialDataParser:
 
         - None/빈값, '-', 'NaN' 등은 0으로 처리
         - 괄호 표기 '(123)'은 음수로 처리
-        - 천단위 콤마, + 기호 제거
+        - 천단위 콤ma, + 기호 제거
         - 소수는 float로 파싱 후 int로 변환
         - 문자열 내 숫자가 없으면 0 반환
         """
@@ -81,11 +81,27 @@ class _FinancialDataParser:
         except Exception:
             return 0
     
+    def _extract_date_from_rcept_no(self, rcept_no: str) -> Optional[date]:
+        """rcept_no에서 보고서 제출일 추출 (YYYYMMDD → date)
+        
+        Args:
+            rcept_no: DART API의 rcept_no 필드 (예: "20190401004781")
+            
+        Returns:
+            보고서 제출일 (date 객체) 또는 None (추출 실패 시)
+        """
+        if not rcept_no or len(rcept_no) < 8:
+            return None
+        try:
+            return datetime.strptime(rcept_no[:8], '%Y%m%d').date()
+        except ValueError:
+            return None
+    
     def _report_code_to_quarter(self, reprt_code: str) -> str:
         """보고서 코드를 분기로 변환"""
         return {"11013": "Q1", "11012": "Q2", "11014": "Q3", "11011": "Q4"}.get(reprt_code, "Unknown")
     
-    def parse(self, financials_raw: List[Dict], annual_shares_raw: List[Dict]) -> pd.DataFrame:
+    def parse(self, financials_raw: List[Dict], annual_shares_raw: List[Dict]) -> Tuple[pd.DataFrame, Optional[date]]:
         """재무제표와 주식총수 원본 데이터를 통합 DataFrame으로 변환
         
         Args:
@@ -93,16 +109,24 @@ class _FinancialDataParser:
             annual_shares_raw: DART 주식총수 API 응답
             
         Returns:
-            columns: ['year', 'quarter', 'account_id', 'amount']
+            Tuple[DataFrame, Optional[date]]: (파싱된 데이터프레임, 가장 최신 보고서 날짜)
         """
         processed_list = []
+        report_dates = []  # 보고서 날짜 수집
+        
         for item in financials_raw:
+            # rcept_no에서 보고서 날짜 추출
+            report_date = self._extract_date_from_rcept_no(item.get("rcept_no"))
+            if report_date:
+                report_dates.append(report_date)
+            
             processed_list.append({
                 "year": int(item["bsns_year"]),
                 "quarter": self._report_code_to_quarter(item["reprt_code"]),
                 "account_id": item.get("account_id"),
                 "amount": self._to_numeric(item.get("thstrm_amount"))
             })
+        
         for item in annual_shares_raw:
             # 보통주 정보만 필터링
             if item.get("se") == "보통주":
@@ -112,10 +136,16 @@ class _FinancialDataParser:
                     "account_id": "SharesOutstanding",
                     "amount": self._to_numeric(item.get("istc_totqy"))
                 })
+        
         df = pd.DataFrame(processed_list)
-        return df.dropna(subset=['account_id']).drop_duplicates(
+        df = df.dropna(subset=['account_id']).drop_duplicates(
             subset=['year', 'quarter', 'account_id'], keep='last'
         ).reset_index(drop=True)
+        
+        # 가장 최신 보고서 날짜 반환 (메타데이터)
+        latest_report_date = max(report_dates) if report_dates else None
+        
+        return df, latest_report_date
 
 
 class _EpsCalculator:

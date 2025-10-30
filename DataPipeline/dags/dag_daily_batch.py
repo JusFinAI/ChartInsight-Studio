@@ -504,7 +504,8 @@ with DAG(
     },
     # 스케줄을 Variable로 관리하면 운영 중 UI에서 변경 가능
     schedule_interval=Variable.get('daily_batch_schedule', default_var='0 17 * * 1-5'),
-    start_date=pendulum.datetime(2025, 10, 1, tz="Asia/Seoul"),
+    #start_date=pendulum.datetime(2025, 10, 1, tz="Asia/Seoul"),
+    start_date=pendulum.now('Asia/Seoul').subtract(hours=1),
     catchup=False,
     tags=['production', 'batch', 'daily'],
     description='매일 장 마감 후, 시장의 모든 핵심 데이터를 분석하고 집계하는 일일 배치 DAG',
