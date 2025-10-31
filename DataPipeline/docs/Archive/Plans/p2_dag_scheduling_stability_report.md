@@ -95,3 +95,140 @@ with DAG(...) as dag:
 
 - **결정 사항**: 현재 해당 현상의 발생 빈도가 낮고, 다른 우선순위의 작업을 위해 위 해결 방안의 **즉각적인 코드 구현은 보류**합니다.
 - **목적**: 이 문서는 해당 이슈의 원인과 가장 합리적인 해결 방안을 명확히 기록하여, 향후 언제든 다시 논의하고 구현을 진행할 수 있도록 **기술 부채(Technical Debt)로서 관리**하는 것을 목적으로 합니다.
+
+
+### 7. 구체적 지침 
+
+지침: DAG 안정성 확보를 위한 '실행 시간 검증 가드' 구현
+
+  TO: cursor.ai 개발자
+  FROM: 프로젝트 총감독관 (Gemini)
+  DATE: 2025-10-30
+  SUBJECT: 모든 주요 DAG에 '실행 시간 검증 가드'를 구현하여 스케줄링 안정성을 100% 확보하라.
+
+  1. 목적 (Objective)
+
+  Airflow 스케줄러의 특성으로 인해 발생하는 의도치 않은 과거 스케줄 자동 실행 현상을 원천 차단하여, 모든 DAG가 예측 가능하고 안정적으로 동작하도록 보장하는 것을 목표로 한다.
+
+  2. 배경 (Background)
+
+  현재 dag_daily_batch 등 주요 DAG들은 비활성화(pause) 후 다시 활성화(unpause)할 때, 가장 최근의 과거 스케줄 1개가 자동으로 실행되는 문제가 있다. 이는 불필요한 API 호출과 데이터 중복 처리 등 리소스 낭비와 데이터 무결성 문제를 야기하는 심각한
+  이슈이다.
+
+  우리는 이 문제를 해결하기 위해, 스케줄러의 동작 자체를 바꾸는 대신, DAG가 실행될 때 스스로 실행 시점의 유효성을 검사하여, 너무 오래된 실행일 경우 후속 작업을 모두 건너뛰게(Skip) 만드는 '가드(Guard)' 패턴을 도입하기로 결정했다.
+
+  3. 구현 계획 (Implementation Plan)
+
+  ##### 1단계: `start_date` 원상 복구
+
+  가장 먼저, 임시방편으로 적용했던 동적 start_date를 원래의 고정된 날짜로 되돌린다. 이는 DAG의 정체성을 안정적으로 유지하기 위해 필수적이다.
+
+   - 대상 파일:
+       - DataPipeline/dags/dag_daily_batch.py
+       - DataPipeline/dags/dag_financials_update.py
+   - 수정 내용:
+
+   1     # 변경 전
+   2     start_date=pendulum.now('Asia/Seoul').subtract(hours=1)
+   3
+   4     # 변경 후 (예시)
+   5     start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Seoul")
+
+  ##### 2단계: 공통 가드 함수 생성
+
+  여러 DAG에서 재사용할 수 있도록, 가드 로직을 별도의 유틸리티 파일로 분리한다.
+
+   - 신규 파일 생성: DataPipeline/src/utils/dag_guards.py
+   - 작성 내용:
+
+    1     # DataPipeline/src/utils/dag_guards.py
+    2     import pendulum
+    3     import logging
+    4
+    5     logger = logging.getLogger(__name__)
+    6
+    7     def check_execution_is_recent(**kwargs):
+    8         """
+    9         DAG의 실행 시점(logical_date)이 현재로부터 너무 오래되었는지 검사합니다.
+   10         오래된 스케줄일 경우, 후속 작업을 건너뛰도록 분기합니다.
+   11
+   12         Returns:
+   13             str: 다음 Task의 ID 또는 스킵을 위한 Task ID
+   14         """
+   15         logical_date = kwargs.get('logical_date')
+   16
+   17         # 허용 지연 시간 (예: 2일). 이 시간보다 오래된 스케줄은 비정상으로 간주.
+   18         allowed_delay = pendulum.duration(days=2)
+   19
+   20         logger.info(f"가드 검사 시작: 실행 시점 = {logical_date}")
+   21
+   22         if pendulum.now('Asia/Seoul') > logical_date + allowed_delay:
+   23             logger.warning(f"오래된 스케줄 감지. 실행을 건너뜁니다. (허용 지연: {allowed_delay.in_days()}일)")
+   24             return 'skip_downstream_tasks'  # 스킵 경로로 분기
+   25         else:
+   26             logger.info("정상적인 최신 실행입니다. 작업을 계속 진행합니다.")
+   27             return 'continue_dag_execution' # 정상 경로로 분기
+
+  ##### 3단계: `dag_daily_batch.py`에 가드 적용
+
+  가장 복잡한 dag_daily_batch.py에 가드 패턴을 적용하는 예시이다.
+
+   1     # dag_daily_batch.py 상단
+   2     from airflow.operators.python import BranchPythonOperator
+   3     from airflow.operators.empty import EmptyOperator
+   4     from src.utils.dag_guards import check_execution_is_recent # 2단계에서 만든 함수
+
+   2. 가드 Task 정의: DAG 정의부(with DAG(...) as dag:) 내에 아래 Task들을 추가한다.
+
+    1     # with DAG(...) as dag:
+    2
+    3     # 가드 Task: 실행 여부를 분기
+    4     check_execution_date_task = BranchPythonOperator(
+    5         task_id='check_execution_date',
+    6         python_callable=check_execution_is_recent,
+    7         doc_md="""
+    8         ### 실행 시간 검증 가드
+    9         - **목적**: DAG의 실행 시점이 너무 오래된 과거일 경우, 모든 후속 작업을 건너뛰게 하여 불필요한 실행을 방지합니다.
+   10         - **분기**:
+   11             - `continue_dag_execution`: 정상 실행
+   12             - `skip_downstream_tasks`: 모든 작업 건너뛰기
+   13         """,
+   14     )
+   15
+   16     # 정상 실행 경로를 시작하는 더미 Task
+   17     continue_dag_task = EmptyOperator(
+   18         task_id='continue_dag_execution'
+   19     )
+   20
+   21     # 스킵 경로의 종착점이 될 더미 Task
+   22     skip_dag_task = EmptyOperator(
+   23         task_id='skip_downstream_tasks'
+   24     )
+
+    1     # 기존 의존성 코드 전체를 아래 내용으로 교체
+    2
+    3     # 1. 가드 Task가 가장 먼저 실행되어 두 경로(계속/스킵)로 분기
+    4     check_execution_date_task >> [continue_dag_task, skip_dag_task]
+    5
+    6     # 2. '계속' 경로가 원래의 첫 Task였던 'validate_snapshot_task'를 호출
+    7     continue_dag_task >> validate_snapshot_task
+    8
+    9     # 3. 이후 모든 기존 의존성은 그대로 유지
+   10     validate_snapshot_task >> [continue_live_mode_task, continue_simulation_mode_task]
+   11     continue_live_mode_task >> sync_stock_master_task
+   12     sync_stock_master_task >> update_analysis_target_flags_task
+   13     continue_simulation_mode_task >> update_analysis_target_flags_task
+   14     update_analysis_target_flags_task >> fetch_latest_low_frequency_candles_task
+   15     fetch_latest_low_frequency_candles_task >> [calculate_core_metrics_group, run_technical_analysis_task]
+   16     [calculate_core_metrics_group, run_technical_analysis_task] >> load_final_results_task
+
+  ##### 4단계: `dag_financials_update.py`에 가드 적용
+
+  dag_financials_update.py 에도 위와 동일한 패턴을 적용한다. 이 DAG는 구조가 더 단순하므로 적용하기 쉬울 것이다.
+
+   - check_execution_date_task를 추가하고, 기존의 첫 Task였던 run_financials_update_task가 continue_dag_task에 의존하도록 수정한다.
+
+   - unpause 시 의도치 않은 과거 스케줄이 생성되더라도, check_execution_date Task 이후의 모든 Task들이 'skipped' 상태가 되어야 한다.
+   - 정상적인 스케줄 시간이나 수동 실행 시에는 모든 Task가 정상 실행되어야 한다.
+
+  ---

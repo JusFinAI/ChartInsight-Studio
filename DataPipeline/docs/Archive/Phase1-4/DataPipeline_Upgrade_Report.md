@@ -1,5 +1,22 @@
 # DataPipeline Upgrade Report (Plan → Report 매핑)
 
+---
+## ⚠️ 보관 문서 알림 (ARCHIVED DOCUMENT)
+
+**작성 시점**: 2025-10-13  
+**보관 일자**: 2025-10-31  
+**보관 이유**: Phase 1-4 완료 및 검증 완료로 인한 통합
+
+**⛔ 이 문서는 역사적 기록입니다.**
+- 현재 프로젝트 상태를 반영하지 않습니다
+- Phase 1-4 구현 검증 결과를 담고 있습니다
+- 학습 및 참조 목적으로만 사용하세요
+- **최신 정보**: `DataPipeline_Project_Roadmap.md v2.0` 참조
+
+**관련 통합 문서**: 
+- `DataPipeline_Project_Roadmap.md v2.0` - Phase 1-4 섹션 참조
+---
+
 작성일: 2025-10-13
 작성자: 자동화 검사(assistant) 및 담당자
 

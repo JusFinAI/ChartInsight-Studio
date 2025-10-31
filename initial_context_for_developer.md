@@ -47,12 +47,15 @@
 **✅ Phase 3: SIMULATION 모드 아키텍처 동기화 (2025-10-29, v7)**
 - **v6 → v7 진화**: 단일 책임 원칙(SRP) 완벽 구현 - 각 DAG가 자신의 데이터 결과물만 책임지는 완전한 역할 분리
 - **`dag_initial_loader` 역할 명확화**: 오직 캔들 데이터 스냅샷(`simulation.candles`)만 생성, 시장/업종 지수 데이터 자동 포함
-- **`dag_financials_update` SIMULATION 모드 신설**: 오직 재무 데이터 스냅샷(`simulation.financial_analysis_results`)만 생성, `test_stock_codes` 유연 처리
+- **`dag_f极ancials_update` SIMULATION 모드 신설**: 오직 재무 데이터 스냅샷(`simulation.financial_analysis_results`)만 생성, `test极_stock_codes` 유연 처리
 - **`dag_daily_batch` 분석 순수화**: 두 스냅샷을 읽어 분석만 수행, 스키마 전환 로직으로 `simulation` 스키마 자동 선택
 - **자동 감지 기능 완성**: `target_datetime`과 `test_stock_codes` 파라미터 생략 시 Airflow Variable에서 자동 감지
 - **Parquet 의존성 완전 제거**: 모든 데이터 조회가 DB 기반으로 통합
-- **최종 통합 테스트 준비 완료**: End-to-End 검증 전략 수립, 모든 코드 검수 완료
-- **상세 문서**: `SIMULATION 모드 아키텍처 동기화 계획서.md` (v7 업데이트)
+- **최종 통합 테스트 완료**: 12개 종목 End-to-End 테스트 성공, 11개 종목 정상 분석 (207940 거래정지 제외)
+- **P2 스케줄링 이슈 해결**: `start_date=pendulum.now('Asia/Seoul').subtract(hours=1)` 설정으로 과거 실행 자동 트리거 방지
+- **재무 데이터 정확도 향상**: `rcept_no` 기반 `analysis_date` 구현으로 보고일자 정확성 확보
+- **보안 강화**: SQL Injection 취약점 해결, PostgreSQL `ANY()` 함수 도입, Raw SQL 구현
+- **상세 문서**: `SIMULATION 모드 아키텍처 동기화 계획서.md` (v7 최종 업데이트)
 
 #### 3.3 현재 완성된 주요 컴포넌트
 
@@ -67,13 +70,19 @@
 - `database.py`: 강화된 멱등성 보장 초기화 로직
 - `data_collector.py`: SIMULATION 스냅샷 생성 기능 (캔들 데이터 전용)
 
-#### 3.4 현재 상태 (요약)
+#### 3.4 현재 상태 (極요약)
 
 - ✅ **RS 점수 계산 기능 완성** (Market RS, Sector RS, SIMULATION 지원)
 - ✅ **DART API 최적화 완료** (API 호출 73% 절감, 정확도 100%, SIMULATION 모드)
 - ✅ **게이트키퍼 아키텍처 완성** (테스트 유연성 극대화, 자동 감지 기능)
 - ✅ **데이터 파이프라인 핵심 아키텍처 안정화** (v7 역할 분리 완성)
-- 🎯 **다음 과제**: End-to-End 통합 테스트 (과제 8)
+- ✅ **End-to-End 통합 테스트 완료** (SIMULATION 모드 v7 아키텍처 검증 완료)
+- ✅ **P2 스케줄링 이슈 해결** (과거 실행 자동 트리거 방지)
+- ✅ **재무 데이터 정확도 향상** (rcept_no 기반 analysis_date 구현)
+- 🎯 **다음 과제**: 운영 효율성 개선 및 테마 분석 통합
+  - `dag_initial_loader` 제로 필터 통합 (4,000+ → ~1,300개 처리)
+  - 선택적 업종 데이터 수집 최적화 (79개 → 16-17개 코드 처리)  
+  - 키움증권 테마 RS 분석 파이프라인 통합
 
 ### 4. 개발 환경 정보 (Development Environment)
 
@@ -170,24 +179,24 @@ ChartInsight-Studio/
 
 - **필수 포함 문서 (우선 로드)**
   - `DataPipeline_Project_Roadmap.md`  
-    **목적**: 프로젝트 로드맵과 완료된 과제(1~6) 및 현재 과제(8: 통합 테스트) 확인
-    **내용**: 각 과제의 목표, 완료 상태, 우선순위 정보
-  - `DART_API_Optimization_Final_Report_v3.8.md`  
+    **목적**: 프로젝트 로드맵과 완료된 과제(1~7) 및 향후 과제 확인
+    **내용**: 각 과極제의 목표, 완료 상태, 우선순위 정보
+  - `DART_API_Optimization_Final_Report_v3.极8.md`  
     **목적**: 최근 완료한 DART API 최적화의 전체 맥락과 기술적 상세 이해
     **내용**: 문제 정의 → 원인 분석 → 해결 방안 → 검증 결과 → 교훈
     **핵심 학습**: `last_analysis_date` 처리 로직, 3-tier fallback, API 최적화 전략
   - `SIMULATION 모드 아키텍처 동기화 계획서.md`  
-    **목적**: 과제 6 완료 보고서 (v7 아키텍처 상세 이해)
-    **내용**: v7 역할 분리 아키텍처, End-to-End 검증 전략
-  - `RS_SCORE_IMPLEMENTATION_REPORT.md` (선택적)
-    **목적**: RS 점수 계산 기능의 Phase1/Phase2 구현 배경 이해
-    **내용**: Sector RS 계산, 타임존 버그, 아키텍처 재정의 과정
+    **목적**: v7 아키텍처 상세 이해 및 End-to-End 테스트 결과 확인
+    **내용**: v7 역할 분리 아키텍처, 검증 완료 결과, 향후 과제(제로 필터 통합, 선택적 업종 데이터, 테마 분석 통합)
+  - `p2_dag_scheduling_stability_report.md` (선택적)
+    **목적**: P2 스케줄링 이슈 분석 및 해결 방안 이해
+    **내용**: 과거 실행 자동 트리거 현상, `start_date` 동적 설정 해결책
 
 - **사용 방법(권장)**
   - 새 세션 시작 시 `DataPipeline_Project_Roadmap.md`로 현재 위치 파악
   - `DART_API_Optimization_Final_Report_v3.8.md`로 최근 성과 상세 이해
-  - `SIMULATION 모드 아키텍처 동기화 계획서.md`로 v7 아키텍처 이해
-  - 다음 과제(통합 테스트)로 자연스럽게 전환
+  - `SIMULATION 모드 아키텍처 동기화 계획서.md`로 v7 아키텍처 및 향후 과제 이해
+  - 운영 효율성 개선 또는 테마 분석 통합 과제로 자연스럽게 전환
 
 
 
