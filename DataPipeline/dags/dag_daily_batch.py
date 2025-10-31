@@ -558,12 +558,15 @@ with DAG(
         try:
             codes_to_process = []
             if test_stock_codes_param:
-                # 1. 사용자가 test_stock_codes를 직접 입력한 경우: 항상 최우선으로 적용
+                # 1. 사용자가 test_stock_codes를 직접 입력한 경우: 제로 필터링 적용
                 if isinstance(test_stock_codes_param, str):
-                    codes_to_process = [c.strip() for c in test_stock_codes_param.split(',') if c.strip()]
+                    user_codes = [c.strip() for c in test_stock_codes_param.split(',') if c.strip()]
                 elif isinstance(test_stock_codes_param, (list, tuple)):
-                    codes_to_process = [str(c).strip() for c in test_stock_codes_param if str(c).strip()]
-                logger.info(f"test_stock_codes 파라미터로 실행 대상을 한정합니다: {len(codes_to_process)}개")
+                    user_codes = [str(c).strip() for c in test_stock_codes_param if str(c).strip()]
+                
+                # ✅ 제로 필터링 적용하여 최종 대상 결정
+                codes_to_process = user_codes  # 필터링은 update_analysis_target_flags 함수 내에서 수행
+                logger.info(f"사용자 지정 종목 {len(user_codes)}개에 대해 제로 필터링을 적용합니다.")
             else:
                 # 2. 사용자가 test_stock_codes를 비워둔 경우: 모드에 따라 동작 분기
                 if execution_mode == 'SIMULATION':

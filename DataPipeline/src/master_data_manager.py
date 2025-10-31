@@ -5,7 +5,7 @@ DB 동기화(종목 마스터) 관련 유틸리티
 Kiwoom API를 통해 전체 종목 정보를 조회하고 DB와 동기화합니다.
 """
 import logging
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional, Set
 
 from sqlalchemy.dialects.postgresql import insert
 
@@ -14,6 +14,10 @@ from .kiwoom_api.core.client import client as kiwoom_client
 from .kiwoom_api.stock_info import get_all_stock_list
 from src.utils.filters import apply_filter_zero
 from src.utils.logging_kst import configure_kst_logger
+from fuzzywuzzy import fuzz
+import logging
+from sqlalchemy.orm import Session
+from src.database import Stock
 
 logger = configure_kst_logger(__name__)
 
@@ -34,6 +38,93 @@ STOCK_CODE_TO_SECTOR_CODE_MAP = {
     '054050': '127',  # 농우바이오 -> 기타제조 (KOSDAQ: 127)
     '950140': '119',  # 잉글우드랩 -> 화학 (KOSDAQ: 119)
 }
+
+# 수동으로 지정할 예외 케이스
+MANUAL_SECTOR_MAP = {
+    '부동산': '일반서비스',
+    '금융업': '금융'
+}
+
+SIMILARITY_THRESHOLD = 85  # 유사도 매칭을 위한 최소 점수
+
+
+def _find_sector_code(stock_code: str, industry_name: str, sector_map: Dict[str, str], manual_stock_map: Dict[str, str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Enhanced matching algorithm with three priority levels:
+    0) Direct stock_code -> sector_code mapping (STOCK_CODE_TO_SECTOR_CODE_MAP provided by master_data_manager)
+    1) Manual name corrections (MANUAL_SECTOR_MAP) and exact match
+    2) Fuzzy matching using fuzzywuzzy.ratio with SIMILARITY_THRESHOLD
+
+    Returns: (matched_sector_code or None, best_match_name or None)
+    """
+    # 0) Stock code direct mapping if provided via master_data_manager
+    try:
+        from src.master_data_manager import STOCK_CODE_TO_SECTOR_CODE_MAP
+    except Exception:
+        STOCK_CODE_TO_SECTOR_CODE_MAP = {}
+
+    if stock_code and stock_code in STOCK_CODE_TO_SECTOR_CODE_MAP:
+        return STOCK_CODE_TO_SECTOR_CODE_MAP[stock_code], None
+
+    # 1) industry_name empty -> cannot match further
+    if not industry_name:
+        return None, None
+
+    corrected_name = MANUAL_SECTOR_MAP.get(industry_name, industry_name)
+
+    # exact match
+    for name, code in sector_map.items():
+        if corrected_name == name:
+            return code, name
+
+    # fuzzy match
+    best_match_name = None
+    highest_score = 0
+    for name in sector_map.keys():
+        try:
+            score = fuzz.ratio(corrected_name, name)
+        except Exception:
+            score = 0
+        if score > highest_score:
+            highest_score = score
+            best_match_name = name
+
+    if highest_score >= SIMILARITY_THRESHOLD:
+        return sector_map.get(best_match_name), best_match_name
+
+    return None, best_match_name
+
+
+def get_necessary_sector_codes(db: Session, user_stock_codes: List[str]) -> Set[str]:
+    """
+    주어진 종목 코드 리스트가 속한 모든 업종 코드를 조회하여 중복 없이 반환합니다.
+    """
+    if not user_stock_codes:
+        return set()
+
+    try:
+        # 배치 처리를 통해 대량의 종목 코드도 효율적으로 조회
+        sector_codes = set()
+        batch_size = 500
+        for i in range(0, len(user_stock_codes), batch_size):
+            batch = user_stock_codes[i:i+batch_size]
+
+            # Stock 테이블에서 sector_code만 조회
+            sectors_in_batch = db.query(Stock.sector_code).filter(
+                Stock.stock_code.in_(batch),
+                Stock.sector_code.isnot(None)
+            ).distinct().all()
+
+            sector_codes.update({sector_code for (sector_code,) in sectors_in_batch})
+
+        logger.info(f"{len(user_stock_codes)}개 종목으로부터 {len(sector_codes)}개의 관련 업종 코드를 추출했습니다.")
+        return sector_codes
+
+    except Exception as e:
+        logger.error(f"필요 업종 코드 조회 중 오류 발생: {e}", exc_info=True)
+        # 오류 발생 시 안전하게 빈 Set 반환
+        return set()
+
 
 def _fetch_all_stock_codes_from_api() -> List[Dict]:
     """
@@ -322,6 +413,50 @@ def sync_stock_master_to_db(db_session) -> List[str]:
     # 활성 종목 리스트를 반환 (XCom으로 전달 가능)
     active_stocks = db_session.query(Stock.stock_code).filter(Stock.is_active == True).all()
     return [code for code, in active_stocks]
+
+
+def get_filtered_initial_load_targets(db_session, stock_codes: List[str] = None) -> List[str]:
+    """
+    '필터 제로'를 적용하여 최종 초기 적재 대상 종목 코드 리스트를 반환합니다.
+    이 함수는 DB 상태를 변경하지 않습니다.
+    """
+    logger.info("초기 적재 대상 선정을 위한 필터링을 시작합니다.")
+
+    if stock_codes:
+        # 수동으로 코드가 지정된 경우
+        target_stocks_query = db_session.query(Stock).filter(Stock.stock_code.in_(stock_codes))
+        logger.info(f"{len(stock_codes)}개의 지정된 종목을 대상으로 필터링합니다.")
+    else:
+        # 자동 모드: is_active 및 backfill_needed 플래그 사용
+        target_stocks_query = db_session.query(Stock).filter(
+            Stock.is_active == True,
+            Stock.backfill_needed == True
+        )
+        logger.info("DB에서 is_active=True, backfill_needed=True인 모든 종목을 대상으로 필터링합니다.")
+
+    stocks_to_filter = target_stocks_query.all()
+
+    if not stocks_to_filter:
+        logger.warning("필터링할 대상 종목이 없습니다.")
+        return []
+
+    # apply_filter_zero에 맞는 형식으로 변환
+    stock_info_list = [
+        {
+            'code': s.stock_code, 'name': s.stock_name, 'state': s.state,
+            'auditInfo': s.audit_info, 'lastPrice': s.last_price,
+            'listCount': s.list_count, 'orderWarning': s.order_warning,
+            'marketName': s.market_name
+        }
+        for s in stocks_to_filter
+    ]
+
+    filtered_stocks = apply_filter_zero(stock_info_list)
+    filtered_codes = [stock['code'] for stock in filtered_stocks]
+
+    logger.info(f"필터링 결과: 총 {len(stocks_to_filter)}개 중 {len(filtered_codes)}개 종목이 최종 대상으로 선정되었습니다.")
+
+    return filtered_codes
 
 
 def update_analysis_target_flags(db_session, stock_codes: List[str]) -> int:

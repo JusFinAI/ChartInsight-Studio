@@ -1,5 +1,8 @@
 from typing import Dict, List
 from src.config import FILTER_ZERO_CONFIG
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def apply_filter_zero(stock_list: List[Dict]) -> List[Dict]:
@@ -34,32 +37,40 @@ def apply_filter_zero(stock_list: List[Dict]) -> List[Dict]:
 
     passed_stocks: List[Dict] = []
     for stock in stock_list:
+        stock_code = stock.get('code')
+        logger.debug(f"🔍 필터링 시작: {stock_code}")
+
         # 1) 종목명 키워드 필터 (대소문자 무시)
         name = (stock.get('name') or '').lower()
         if any(keyword in name for keyword in name_exclude_keywords_lower):
+            logger.debug(f"❌ {stock_code} 종목명 필터링: {name}")
             continue
 
         # 2) 종목 상태 키워드 필터 (대소문자 무시)
         state = (stock.get('state') or '').lower()
         if any(keyword in state for keyword in state_exclude_keywords_lower):
+            logger.debug(f"❌ {stock_code} 상태 필터링: {state}")
             continue
 
         # 2-1b) market_name 기반 필터링 추가
         market_name = (stock.get('marketName') or stock.get('market_name') or '').lower()
         if any(keyword in market_name for keyword in market_exclude_keywords_lower):
             # 시장명이 ETF/ETN 등으로 표기된 경우 분석 대상에서 제외
+            logger.debug(f"❌ {stock_code} market_name 필터링: {market_name}")
             continue
 
         # 2-1) auditInfo도 상태와 유사한 정보로 간주하여 검사 (대소문자 무시)
         audit_info_raw = (stock.get('auditInfo') or stock.get('audit_info') or '')
         audit_info = audit_info_raw.lower()
         if any(keyword in audit_info for keyword in state_exclude_keywords_lower):
+            logger.debug(f"❌ {stock_code} audit_info 필터링: {audit_info}")
             continue
 
         # 3) 투자 유의(orderWarning) 필드 검사 - 단순화
         if filter_on_warning:
             order_warning = str(stock.get('orderWarning', stock.get('order_warning', '0'))).strip()
             if order_warning != '0':
+                logger.debug(f"❌ {stock_code} order_warning 필터링: {order_warning}")
                 continue
 
 
@@ -69,21 +80,26 @@ def apply_filter_zero(stock_list: List[Dict]) -> List[Dict]:
 
         if last_price is None or list_count is None:
             # 필요한 숫자 데이터가 없으면 탈락
+            logger.debug(f"❌ {stock_code} 필요한 숫자 데이터 없음")
             continue
 
         try:
             # 이미 숫자 타입일 것을 가정 (master_data_manager에서 정규화)
             if last_price <= 0 or list_count <= 0:
+                logger.debug(f"❌ {stock_code} 시가총액 계산 조건 불만족: last_price={last_price}, list_count={list_count}")
                 continue
 
             market_cap_억 = (float(last_price) * float(list_count)) / 100_000_000
             if market_cap_억 < min_market_cap_억:
+                logger.debug(f"❌ {stock_code} 시가총액 필터링: market_cap_억={market_cap_억}, min_market_cap_억={min_market_cap_억}")
                 continue
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
             # 타입 문제 등이 발생하면 탈락
+            logger.debug(f"❌ {stock_code} 시가총액 계산 오류: {e}")
             continue
 
         # 모두 통과
+        logger.debug(f"✅ {stock_code} 모든 필터 통과")
         passed_stocks.append(stock)
 
     return passed_stocks

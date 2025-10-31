@@ -266,6 +266,36 @@ docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmar
 - 실행 시 live.sectors 테이블에 UPSERT 방식으로 데이터가 저장됩니다
 - KOSPI와 KOSDAQ 업종을 모두 수집합니다 (총约 65개)
 
+## 5.3 업종 매핑 및 정보 확인
+
+### 명령
+```bash
+# 특정 종목의 업종 코드 매핑 확인
+docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c 'SELECT stock_code, stock_name, sector_code FROM live.stocks WHERE stock_code IN (\'005930\',\'000660\',\'373220\');'"
+
+# 특정 업종 코드의 상세 정보 확인  
+docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c 'SELECT sector_code, sector_name FROM live.sectors WHERE sector_code IN (\'103\',\'119\',\'124\');'"
+
+# 테스트 종목과 관련된 업종 데이터 수집 확인
+docker compose --env-file .env.docker --profile pipeline exec postgres-tradesmart bash -c "psql -U \$POSTGRES_USER -d \$POSTGRES_DB -c 'SELECT stock_code, COUNT(*) as candle_count FROM live.candles WHERE stock_code IN (\'103\',\'119\',\'124\') GROUP BY stock_code;'"
+```
+
+### 설명
+- `stock_code`와 `sector_code` 매핑 관계 확인
+- 업종 코드별 상세 정보(업종명) 조회
+- 선택적 업종 데이터 수집 결과 검증
+
+### 사용 상황
+- 제로 필터링 테스트 후 업종 매핑 정당성 확인
+- `get_necessary_sector_codes()` 함수 동작 검증
+- 선택적 업종 수집 최적화 결과 확인
+- RS 점수 계산을 위한 기준 데이터 검증
+
+### 참고 사항
+- `dag_initial_loader`의 선택적 업종 수집 기능은 테스트 종목이 속한 업종만 수집합니다
+- 업종 코드 103(일반서비스), 119(화학), 124(전기/전자)는 주요 업종입니다
+- 업종 데이터는 RS(상대강도) 점수 계산에 필수적인 기준 데이터입니다
+
 
 
 

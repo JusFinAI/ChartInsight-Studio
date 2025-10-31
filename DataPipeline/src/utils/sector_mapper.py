@@ -1,6 +1,8 @@
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, List, Set
 from fuzzywuzzy import fuzz
 import logging
+from sqlalchemy.orm import Session
+from src.database import Stock
 
 logger = logging.getLogger(__name__)
 
@@ -58,5 +60,36 @@ def _find_sector_code(stock_code: str, industry_name: str, sector_map: Dict[str,
         return sector_map.get(best_match_name), best_match_name
 
     return None, best_match_name
+
+
+def get_necessary_sector_codes(db: Session, user_stock_codes: List[str]) -> Set[str]:
+    """
+    주어진 종목 코드 리스트가 속한 모든 업종 코드를 조회하여 중복 없이 반환합니다.
+    """
+    if not user_stock_codes:
+        return set()
+
+    try:
+        # 배치 처리를 통해 대량의 종목 코드도 효율적으로 조회
+        sector_codes = set()
+        batch_size = 500
+        for i in range(0, len(user_stock_codes), batch_size):
+            batch = user_stock_codes[i:i+batch_size]
+
+            # Stock 테이블에서 sector_code만 조회
+            sectors_in_batch = db.query(Stock.sector_code).filter(
+                Stock.stock_code.in_(batch),
+                Stock.sector_code.isnot(None)
+            ).distinct().all()
+
+            sector_codes.update({sector_code for (sector_code,) in sectors_in_batch})
+
+        logger.info(f"{len(user_stock_codes)}개 종목으로부터 {len(sector_codes)}개의 관련 업종 코드를 추출했습니다.")
+        return sector_codes
+
+    except Exception as e:
+        logger.error(f"필요 업종 코드 조회 중 오류 발생: {e}", exc_info=True)
+        # 오류 발생 시 안전하게 빈 Set 반환
+        return set()
 
 

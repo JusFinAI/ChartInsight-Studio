@@ -16,7 +16,7 @@ FILTER_ZERO_CONFIG = {
 
     # 기준 3: 종목 상태(state)에 포함되면 제외할 키워드
     "STATE_EXCLUDE_KEYWORDS": [
-        "관리종목", "거래정지", "증거금100"
+        "관리종목", "거래정지", "증거금100%"
     ],
 
     # 기준 4: 투자 유의(orderWarning) 필드가 '0'(정상)이 아니면 제외

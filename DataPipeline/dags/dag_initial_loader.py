@@ -115,6 +115,33 @@ def _calculate_default_target_datetime() -> str:
     return default_dt.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _determine_target_stocks_task(**kwargs):
+    """
+    초기 적재 대상을 결정하고 '제로 필터'를 적용하여 XCom으로 전달합니다.
+    """
+    from src.master_data_manager import get_filtered_initial_load_targets
+
+    config = kwargs.get('dag_run').conf if kwargs.get('dag_run') else {}
+    test_stock_codes_param = config.get('test_stock_codes')
+
+    db_session = SessionLocal()
+    try:
+        # 수정 제안: 수동 모드에서도 제로 필터링 적용
+        if test_stock_codes_param:
+            user_codes = [code.strip() for code in test_stock_codes_param.split(',') if code.strip()]
+            # ✅ get_filtered_initial_load_targets에 사용자 지정 종목 전달
+            target_codes = get_filtered_initial_load_targets(db_session, user_codes)
+            logging.info(f"사용자 지정 종목 {len(user_codes)}개 중 {len(target_codes)}개가 필터링 후 처리됩니다.")
+        else:
+            # 자동 모드: DB 조회 및 제로 필터 적용
+            target_codes = get_filtered_initial_load_targets(db_session)
+            logging.info(f"자동 필터링된 최종 대상 종목: {len(target_codes)}개")
+
+        return target_codes
+    finally:
+        db_session.close()
+
+
 def _run_initial_load_task(db_session=None, **kwargs):
     """
     파라미터를 읽어 LIVE 모드에서는 초기 적재를,
@@ -155,10 +182,12 @@ def _run_initial_load_task(db_session=None, **kwargs):
             # 1. [신규] RS 계산에 필요한 모든 코드를 자동으로 추가합니다.
             db = SessionLocal()
             try:
-                sector_codes = {s.sector_code for s in db.query(Sector.sector_code).all()}
+                # [변경] 모든 업종 대신 필요한 업종만 조회
+                from src.utils.sector_mapper import get_necessary_sector_codes
+                user_sector_codes = get_necessary_sector_codes(db, user_stock_codes)
                 market_index_codes = {'001', '101'}
-                all_necessary_codes = list(set(user_stock_codes) | sector_codes | market_index_codes)
-                logger.info(f"RS 계산을 위해 시장/업종 지수 코드를 자동 추가합니다. 총 {len(all_necessary_codes)}개 코드 처리.")
+                all_necessary_codes = list(set(user_stock_codes) | user_sector_codes | market_index_codes)
+                logger.info(f"RS 계산 및 테스트를 위해 {len(all_necessary_codes)}개 관련 코드만 처리합니다.")
             finally:
                 db.close()
 
@@ -196,35 +225,21 @@ def _run_initial_load_task(db_session=None, **kwargs):
                 except ValueError:
                     raise AirflowException(f"target_datetime 형식이 잘못되었습니다. 'YYYY-MM-DD HH:MM:SS' 형식을 사용해주세요.")
 
-            # --- LIVE 모드: 기존 초기 적재 로직 (계속) ---
-            # 1. 대상 종목 선정 로직
-            target_stocks = []
-            mode_description = ""
-            test_stock_codes_param = config.get('test_stock_codes')
-
-            if test_stock_codes_param:
-                mode_description = "🎯 '특정 종목' 모드"
-                if isinstance(test_stock_codes_param, str):
-                    target_stocks = [code.strip() for code in test_stock_codes_param.split(',') if code.strip()]
-                elif isinstance(test_stock_codes_param, (list, tuple)):
-                    target_stocks = [str(code).strip() for code in test_stock_codes_param if str(code).strip()]
-                print(f"수동 모드로 특정 종목에 대해 실행합니다: {target_stocks}")
-            else:
-                rows = db_session.query(Stock.stock_code).filter(Stock.is_active == True, Stock.backfill_needed == True).all()
-                target_stocks = [r.stock_code for r in rows]
-                mode_description = "🔥 '자동 모드(백필 대상 조회)'"
-                print(f"자동 모드로 DB에서 백필 대상 {len(target_stocks)}건을 조회하여 실행합니다.")
+            # --- LIVE 모드: 대상 선정 로직을 XCom PULL로 대체 ---
+            logger.info("LIVE 모드: XCom에서 대상 종목 리스트를 가져옵니다.")
+            ti = kwargs['ti']
+            target_stocks = ti.xcom_pull(task_ids='determine_target_stocks_task')
 
             if not target_stocks:
                 print("처리할 대상 종목이 없습니다. 작업을 종료합니다.")
                 return
 
-            # 2. 공통 파라미터 추출
+            # [기존 로직 유지] 공통 파라미터 추출
             timeframes_to_process = config.get('timeframes', ['5m', '30m', '1h', 'd', 'w', 'mon'])
 
             # 3. 작업 실행 로직
             print(f'\n{'='*60}')
-            print(f'🚀 {mode_description}으로 초기 적재 작업을 시작합니다.')
+            print(f'🚀 LIVE 모드로 초기 적재 작업을 시작합니다.')
             print(f'📊 대상 종목 수: {len(target_stocks)}개')
             print(f'⏰ 타임프레임: {timeframes_to_process}')
             print(f'📅 기준 시점: {target_datetime_str or '자동 계산됨'}')
@@ -252,10 +267,21 @@ def _run_initial_load_task(db_session=None, **kwargs):
             else:
                 logger.warning("API로부터 업종 데이터를 가져오지 못했습니다.")
 
-            # --- [신규] 2. 기준 데이터(지수, 전체 업종) 과거 일/주/월봉 전체 적재 ---
-            logger.info("기준 데이터(지수, 업종)의 전체 과거 일/주/월봉 적재를 시작합니다.")
+            # --- [수정] 기준 데이터(지수, 업종) 적재 로직 ---
+            logger.info("기준 데이터(지수, 업종)의 과거 일/주/월봉 적재를 시작합니다.")
             index_codes = ['001', '101']
-            sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
+
+            # [핵심 수정] target_stocks (XCom으로 받은 최종 대상) 유무에 따라 분기
+            if target_stocks:
+                # 수동 모드(test_stock_codes 지정)로 실행된 경우, 해당 종목의 업종만 조회
+                from src.utils.sector_mapper import get_necessary_sector_codes
+                sector_codes = list(get_necessary_sector_codes(db_session, target_stocks))
+                logger.info(f"LIVE(수동 모드): 지정된 종목과 관련된 {len(sector_codes)}개 업종 데이터만 수집합니다.")
+            else:
+                # 자동 모드(test_stock_codes 미지정)인 경우, 전체 업종 조회
+                sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
+                logger.info(f"LIVE(자동 모드): 전체 {len(sector_codes)}개 업종 데이터를 수집합니다.")
+
             baseline_codes = index_codes + sector_codes
 
             # 기준 데이터 레코드가 stocks 테이블에 존재하도록 보장
@@ -427,6 +453,18 @@ with DAG(
         """
     )
     
+    # 대상 종목 선정 Task 추가
+    determine_target_stocks_task = PythonOperator(
+        task_id='determine_target_stocks_task',
+        python_callable=_determine_target_stocks_task,
+        doc_md="""
+        ### 대상 종목 선정 및 필터링 Task
+        - **자동 모드**: `backfill_needed=True`인 종목을 조회하여 '제로 필터'를 적용합니다.
+        - **수동 모드**: `test_stock_codes` 파라미터로 지정된 종목을 그대로 사용합니다.
+        - **출력**: 최종 대상 종목 리스트를 XCom으로 전달합니다.
+        """
+    )
+    
     # 단일 Task: 초기 데이터 적재
     initial_load_task = PythonOperator(
         task_id='initial_load_task',
@@ -460,5 +498,5 @@ with DAG(
         """
     )
     
-    # 의존성 설정
-    stock_info_load_task >> initial_load_task 
+    # 최종 의존성 설정
+    stock_info_load_task >> determine_target_stocks_task >> initial_load_task 

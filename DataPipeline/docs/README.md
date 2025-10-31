@@ -1,8 +1,8 @@
 # ChartInsight Studio - DataPipeline 문서 센터
 
 **최종 업데이트**: 2025-10-31  
-**프로젝트 버전**: DataPipeline v7.1  
-**문서 버전**: 2.0
+**프로젝트 버전**: DataPipeline v8.0  
+**문서 버전**: 3.0
 
 ---
 
@@ -46,12 +46,14 @@
 
 ### 🟠 최종 보고서 (`Reports/`)
 
-| 문서 | 목적 | 대상 |
-|------|------|------|
-| **`Reports/DART_API_Optimization_Final_Report_v3.8.md`** | DART API 최적화 상세 보고 | 개발자, 아키텍트 |
-| **`Reports/RS_SCORE_IMPLEMENTATION_REPORT.md`** | RS 점수 계산 기능 구현 | 개발자 |
-| **`Reports/report_test_simulation_architechture.md`** | SIMULATION v7 검증 결과 | 개발자, QA |
-| **`Reports/report_과거실행자동트리거.md`** | P2 스케줄링 해결 보고 | 개발자, DevOps |
+| Phase | 문서 위치 | 주요 내용 |
+|-------|----------|----------|
+| **Phase 5** | `Reports/Phase5_RS_Score/` | RS 점수 계산 엔진 |
+| **Phase 6** | `Reports/Phase6_DART_API/` | DART API 최적화 (73% 절감) |
+| **Phase 7** | `Reports/Phase7_Simulation_v7/` | SRP 아키텍처 + P2 안정화 |
+| **Phase 8** | `Reports/Phase8_Zero_Filter/` | Filter Zero 통합 (70% 절감) |
+
+각 Phase 폴더에는 README와 상세 보고서가 포함되어 있습니다.
 
 ### 🔵 초기 컨텍스트 문서 (루트)
 
@@ -66,7 +68,8 @@
 |------|------|
 | **`README.md`** (이 문서) | 문서 센터 및 가이드 |
 | **`Reference/`** | 개발 참조 문서 (디버깅, API 명세) |
-| **`Reports/`** | Phase 5-7 최종 보고서 모음 |
+| **`Reports/`** | Phase 5-8 최종 보고서 (Phase별 폴더 구조) |
+| **`Archive/Phase0-Genesis/`** | 프로젝트 탄생기 (프로토타입) |
 | **`Archive/Phase1-4/`** | Phase 1-4 보관 문서 |
 | **`Archive/Plans/`** | Phase 5-7 계획서 및 중간 문서 |
 
@@ -97,9 +100,11 @@
 2. Roadmap "아키텍처" 섹션
    → 시스템 구조 파악
    
-3. Reports/ 폴더의 최종 보고서 읽기
-   → Reports/RS_SCORE_IMPLEMENTATION_REPORT.md
-   → Reports/DART_API_Optimization_Final_Report_v3.8.md
+3. Reports/ 폴더의 Phase별 README 읽기
+   → Phase5_RS_Score/README.md
+   → Phase6_DART_API/README.md
+   → Phase7_Simulation_v7/README.md
+   → Phase8_Zero_Filter/README.md
 ```
 
 ### 2. 로컬 환경 설정
@@ -224,6 +229,12 @@ simulation.daily_analysis_results     -- 시뮬레이션 분석 결과
 - ✅ Look-Ahead Bias 완전 제거
 - ✅ P2 스케줄링 안정화 (과거 실행 99.7% 절감)
 - ✅ End-to-End 검증 완료
+
+### Phase 8: Filter Zero 통합 (2025-10-31)
+- ✅ API 호출 **70% 절감** (4,000개 → 1,300개 종목)
+- ✅ 실행 시간 **62.5% 단축** (4시간 → 1.5시간)
+- ✅ 저장 공간 **67.5% 절약**
+- ✅ 선택적 업종 수집 (79개 → 16-17개)
 
 ---
 
@@ -562,19 +573,21 @@ FROM simulation.daily_analysis_results;
 - Airflow 기본 개념 학습 (DAG, Task, XCom)
 
 #### 3주차: 핵심 기능
-- `Reports/RS_SCORE_IMPLEMENTATION_REPORT.md` - RS 계산 로직
-- `Reports/DART_API_Optimization_Final_Report_v3.8.md` - API 최적화
+- `Reports/Phase5_RS_Score/` - RS 계산 로직
+- `Reports/Phase6_DART_API/` - API 최적화
 
 #### 4주차: 고급 주제
-- `Reports/report_test_simulation_architechture.md` - SIMULATION 모드
+- `Reports/Phase7_Simulation_v7/` - SIMULATION 모드
+- `Reports/Phase8_Zero_Filter/` - 필터링 최적화
 - `Archive/Phase1-4/DataPipeline_Improvement_Points.md` - 문제 해결 사례
 
 ### 개발자를 위한 참고 자료
 
 - **아키텍처 패턴**: Roadmap v2.0 "주요 기술적 성과"
 - **버그 해결 사례**: Archive/Phase1-4/DataPipeline_Improvement_Points.md
-- **API 최적화**: Reports/DART_API_Optimization_Final_Report_v3.8.md
-- **테스트 전략**: Reports/report_test_simulation_architechture.md
+- **API 최적화**: Reports/Phase6_DART_API/
+- **테스트 전략**: Reports/Phase7_Simulation_v7/
+- **성능 최적화**: Reports/Phase8_Zero_Filter/
 
 ---
 
@@ -601,7 +614,7 @@ FROM simulation.daily_analysis_results;
 
 ### 프로젝트 정보
 - **프로젝트명**: ChartInsight Studio DataPipeline
-- **버전**: v7.1
+- **버전**: v8.0
 - **마지막 업데이트**: 2025-10-31
 
 ### 문서 관리

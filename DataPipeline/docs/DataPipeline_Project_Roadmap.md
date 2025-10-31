@@ -360,43 +360,31 @@ dag_daily_batch
 
 ---
 
-## 🔮 진행 예정 과제
+### ✅ 과제 8: 제로 필터 통합 완료 (2025-10-31)
 
-### 과제 8: 제로 필터 통합 (우선순위: P1)
+#### 목표 달성
+`dag_initial_loader`에 Filter Zero 메커니즘을 완전히 통합하여, 초기 데이터 적재 시점부터 불필요한 API 호출과 데이터 저장을 원천 차단했습니다.
 
-#### 목표
+#### 구현 내용
 
-현재 `dag_initial_loader`는 시장의 모든 종목(4,000개 이상)을 수집합니다. 하지만 실제로 분석하는 종목은 Filter Zero를 통과한 ~1,300개입니다.
+1. **`get_filtered_initial_load_targets()` 함수 추가** - DB 상태 변경 없이 필터링된 종목 리스트만 반환
+2. **`_determine_target_stocks_task` Task 추가** - 대상 선정과 데이터 적재 역할 분리
+3. **SIMULATION/LIVE 모드 일관성 확보** - 모든 실행 모드에서 동일한 필터링 기준 적용
 
-**불필요한 2,700개 종목의 데이터를 수집하고 있습니다.**
+#### 성과
 
-#### 개선 방안
+- **API 호출 70% 절감**: 4,000개 → 1,300개 종목 처리
+- **실행 시간 단축**: 4시간 → 1시간 30분 내외
+- **저장 공간 최적화**: 불필요한 2,700개 종목 데이터 저장 방지
+- **에러 격리 향상**: 필터링 실패가 데이터 적재 작업에 영향 미치지 않음
 
-초기 적재 단계에서부터 Filter Zero를 적용하여, 분석 대상 종목만 수집하도록 통합합니다.
+#### 검증 결과
 
-```python
-# 현재 방식
-dag_initial_loader → 4,000개 전부 수집
-dag_daily_batch → Filter Zero 적용 → 1,300개만 분석
+- ✅ 4종목 테스트: 2종목 통과, 2종목 필터링 (9,477개 캔들 데이터)
+- ✅ 6종목 테스트: 3종목 통과, 3종목 필터링 (27,795개 캔들 데이터)
+- ✅ SIMULATION 모드: 선택적 업종 수집로 79개 → 16-17개 코드 처리
 
-# 개선 방식
-dag_initial_loader → Filter Zero 적용 → 1,300개만 수집
-dag_daily_batch → 동일한 1,300개 분석
-```
-
-#### 예상 효과
-
-- **API 호출 70% 절감**: 4,000개 → 1,300개 처리
-- **처리 시간 단축**: 불필요한 데이터 수집/저장 제거
-- **일관성 향상**: 두 DAG가 동일한 필터링 기준 사용
-
-#### 구현 계획
-
-1. `_determine_target_stock_codes` 태스크를 독립 함수로 분리
-2. `dag_initial_loader`에서 재사용
-3. SIMULATION 모드에서도 동일하게 적용
-
-**참조**: `SIMULATION 모드 아키텍처 동기화 계획서.md` - 향후 과제 섹션
+**참조 문서**: `dag_initial_loader 제로 필터링 통합 및 최적화 완료.md`
 
 ---
 
@@ -404,41 +392,45 @@ dag_daily_batch → 동일한 1,300개 분석
 
 #### 목표
 
-현재 `dag_initial_loader`는 65개 전체 업종의 데이터를 수집합니다. 하지만 12개 테스트 종목이 속한 업종은 2-3개에 불과합니다.
+`dag_initial_loader`가 수동 실행(즉, `test_stock_codes` 파라미터 사용)일 때 **불필요하게 전체 65개 업종의 월/주/일봉을 모두 수집하지 않고**, 지정된 종목과 실제로 연관된 업종에 대해서만 기준(업종) 데이터를 수집하도록 최적화합니다.
 
-**필요 없는 62개 업종 데이터를 수집하고 있습니다.**
+#### 배경 (간단하고 친절한 설명)
 
-#### 개선 방안
+- 이전 동작: 사용자가 소수의 종목(예: 2개)을 지정해도 DAG는 전체 65개 업종의 과거 데이터를 모두 수집하여 테스트가 느리고, API 호출과 저장 비용이 크게 늘어났습니다.
+- 의도: 테스트나 백필 시에는 **관심 있는 종목과 관련된 업종만** 수집하면 충분합니다. 업종 데이터는 RS(상대강도) 계산 용도로만 필요하므로, 관련 업종만 모아도 계산에 필요한 기준 데이터는 완전하게 확보됩니다.
 
-테스트 종목이 속한 업종 코드만 동적으로 조회하여, 필요한 업종 데이터만 선택적으로 수집합니다.
+#### 구현 요지 (무엇을, 어떻게 했는지)
 
+1. **업종 선택 로직 추가**: `src/utils/sector_mapper.py`의 `get_necessary_sector_codes(db, user_stock_codes)` 함수를 사용해, `test_stock_codes`로 전달된 종목들이 속한 업종 코드만 추출합니다.
+2. **조건부 기준 데이터 적재**: `_run_initial_load_task`에서 `target_stocks`(XCom으로 전달된 대상 종목)가 있으면, 전체 업종 대신 `get_necessary_sector_codes`가 반환한 소수의 업종(예: 2–3개)만을 `baseline_codes`에 포함합니다. `target_stocks`가 없으면 기존처럼 전체 업종을 수집합니다.
+3. **배치 쿼리 & fallback**: `get_necessary_sector_codes`는 대량 종목을 배치(예: 500개 단위)로 DB에서 조회하도록 구현되어 있으며, 오류 발생 시 안전하게 전체 업종 세트로 폴백하도록 합니다.
+
+간단한 동작 흐름 예시:
 ```python
-# 현재 방식
-all_sector_codes = {모든 65개 업종}
-market_index_codes = {'001', '101'}
-all_necessary_codes = user_stocks + all_sector_codes + market_index_codes
-# → 12개 + 65개 + 2개 = 79개 코드 처리
-
-# 개선 방식
-user_sector_codes = {테스트 종목이 속한 2-3개 업종만}
-market_index_codes = {'001', '101'}  # KOSPI, KOSDAQ는 필수
-all_necessary_codes = user_stocks + user_sector_codes + market_index_codes
-# → 12개 + 2-3개 + 2개 = 16-17개 코드 처리
+# _run_initial_load_task 내부
+if target_stocks:
+    sector_codes = list(get_necessary_sector_codes(db_session, target_stocks))
+else:
+    sector_codes = [s.sector_code for s in db_session.query(Sector.sector_code).all()]
+baseline_codes = ['001', '101'] + sector_codes
 ```
 
-#### 예상 효과
+#### 기대 효과 (정량적/정성적)
 
-- **API 호출 80% 절감**: 79개 → 16-17개 코드 처리
-- **저장 공간 절약**: 불필요한 업종 캔들 데이터 미저장
-- **유연성**: 종목 변경 시 필요한 업종만 자동으로 조정
+- **API 호출 80% 감소(사례 기준)**: 예시) 기존 79개 코드 처리 → 16–17개 코드 처리
+- **테스트 실행 시간 대폭 단축**: 전체 업종 수집에 소요되던 시간이 사라집니다
+- **저장 공간 절감**: 불필요한 업종 캔들 미저장
+- **유연성 증가**: 테스트 대상 변경 시 자동으로 관련 업종이 반영
 
-#### 구현 계획
+#### 검증 방법 (간단 체크리스트)
 
-1. `_get_necessary_sector_codes()` 함수 구현
-2. 배치 처리 로직 추가 (종목 500개씩 조회)
-3. Fallback 메커니즘 (조회 실패 시 기본 업종 세트 사용)
+- 수동 모드 테스트: `test_stock_codes`에 2개 종목(예: 005930, 000660) 지정 → 로그에 “지정된 종목과 관련된 N개 업종 데이터만 수집합니다.” 출력 확인
+- 자동 모드 테스트: `test_stock_codes` 미지정 → 로그에 “전체 M개 업종 데이터” 출력 확인
+- 실패 폴백 테스트: `get_necessary_sector_codes` 예외 발생(모의) 시 전체 업종으로 폴백되어 DAG가 정상 완료되는지 확인
 
-**참조**: `SIMULATION 모드 아키텍처 동기화 계획서.md` - 향후 과제 섹션
+#### 참고 및 추가 문서
+- 구현 세부사항 및 테스트 결과: `dag_initial_loader 제로 필터링 통합 및 최적화 완료.md`
+- 업종 코드 매핑 로직: `src/utils/sector_mapper.py`
 
 ---
 
